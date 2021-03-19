@@ -48,6 +48,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "calls.h"
 #include "varasm.h"
 #include "tree-object-size.h"
+#include "tree-dynamic-object-size.h"
 #include "tree-ssa-strlen.h"
 #include "realmpfr.h"
 #include "cfgrtl.h"
@@ -10699,6 +10700,33 @@ fold_builtin_object_size (tree ptr, tree ost)
 	  && wi::fits_to_tree_p (bytes, size_type_node))
 	return build_int_cstu (size_type_node, bytes);
     }
+
+  return NULL_TREE;
+}
+
+/* Fold a call to __builtin_dynamic_object_size with arguments PTR and OST,
+   if possible.  */
+
+static tree
+fold_builtin_dyn_object_size (tree ptr, tree ost)
+{
+  int object_size_type;
+  tree bytes;
+
+  if (!valid_object_size_args (ptr, ost, &object_size_type))
+    return NULL_TREE;
+
+  /* __builtin_dynamic_object_size doesn't evaluate side-effects in its
+     arguments; if there are any side-effects, it returns (size_t) -1 for types
+     0 and 1 and (size_t) 0 for types 2 and 3.  */
+  if (TREE_SIDE_EFFECTS (ptr))
+    return build_int_cst_type (size_type_node, object_size_type < 2 ? -1 : 0);
+
+  /* If object size expression cannot be evaluated yet, delay folding until
+     later.  Maybe subsequent passes will help determining it.  */
+  if (TREE_CODE (ptr) == SSA_NAME
+      && compute_builtin_dyn_object_size (ptr, object_size_type, &bytes))
+    return bytes;
 
   return NULL_TREE;
 }
