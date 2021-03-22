@@ -48,6 +48,7 @@ test_builtin_malloc_cond (int cond, __SIZE_TYPE__ *outsz)
   return ret;
 }
 /* { dg-final { scan-tree-dump ": maximum dynamic object size _\[0-9\]" "dynobjsz1" } } */
+/* { dg-final { scan-tree-dump ": Result range: .* \\\[32, 64\\\]" "dynobjsz1" } } */
 
 /* Calloc-like allocator.  */
 
@@ -100,3 +101,13 @@ test_dynarray (__SIZE_TYPE__ dsz)
   return __builtin_dynamic_object_size (bin, 0);
 }
 /* { dg-final { scan-tree-dump "maximum dynamic object size dsz_" "dynobjsz1" } } */
+
+__SIZE_TYPE__
+test_dynarray_cond (int cond)
+{
+  char bin[cond ? 8 : 16];
+
+  return __builtin_dynamic_object_size (bin, 0);
+}
+/* { dg-final { scan-tree-dump "maximum dynamic object size _.*" "dynobjsz1" } } */
+/* { dg-final { scan-tree-dump ": Result range: .* \\\[8, 16\\\]" "dynobjsz1" } } */

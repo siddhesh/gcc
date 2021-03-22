@@ -63,6 +63,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "attribs.h"
 #include "builtins.h"
 #include "print-tree.h"
+#include "gimple-range.h"
 
 struct object_size_info
 {
@@ -453,6 +454,13 @@ pass_dynamic_object_sizes::execute (function *fun)
 		  print_gimple_stmt (dump_file, call, 0, dump_flags);
 		  fprintf (dump_file, " to ");
 		  print_generic_expr (dump_file, result);
+		  fprintf (dump_file, "\n");
+
+		  gimple_ranger query;
+		  value_range range;
+		  query.range_of_stmt (range, gsi_stmt (i), NULL);
+		  fprintf (dump_file, ": Result range: ");
+		  dump_value_range (dump_file, &range);
 		  fprintf (dump_file, "\n");
 		}
 	    }
