@@ -64,6 +64,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "builtins.h"
 #include "print-tree.h"
 #include "gimple-range.h"
+#include "gimplify-me.h"
 
 struct object_size_info
 {
@@ -331,9 +332,63 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	break;
       }
 
+    case GIMPLE_PHI:
+      {
+	unsigned i;
+	auto_vec<tree> sizes;
+
+	/* Bail out if any of the PHI arguments are non-SSA expressions or
+	   if size of an argument cannot be determined.  */
+	for (i = 0; i < gimple_phi_num_args (stmt); i++)
+	  {
+	    tree rhs = gimple_phi_arg_def (stmt, i);
+
+	    if (TREE_CODE (rhs) != SSA_NAME)
+	      break;
+
+	    collect_object_sizes_for (osi, rhs);
+	    if (object_sizes[subobject][SSA_NAME_VERSION (rhs)] == NULL_TREE)
+	      break;
+
+	    sizes.safe_push (object_sizes[subobject][SSA_NAME_VERSION (rhs)]);
+	  }
+
+	/* We have all the sizes, so build the phi node.  */
+	if (i == gimple_phi_num_args (stmt))
+	  {
+	    tree objsz = make_ssa_name (sizetype);
+	    gphi *newphi = create_phi_node (objsz, gimple_bb (stmt));
+	    gphi *obj_phi =  as_a <gphi *> (stmt);
+
+	    for (i = 0; i < gimple_phi_num_args (stmt); i++)
+	      {
+		/* If we built an expression, we will need to build statements
+		   and insert them on the edge right away.  */
+		if (!is_gimple_variable (sizes[i]))
+		  {
+		    gimple_seq seq;
+		    edge e = gimple_phi_arg_edge (obj_phi, i);
+		    sizes[i] = force_gimple_operand (sizes[i], &seq, true,
+						     NULL);
+
+		    gsi_insert_seq_on_edge_immediate (e, seq);
+		  }
+
+		add_phi_arg (newphi, sizes[i],
+			     gimple_phi_arg_edge (obj_phi, i),
+			     gimple_phi_arg_location (obj_phi, i));
+	      }
+
+	    object_sizes[subobject][varno] = PHI_RESULT (newphi);
+	  }
+	else
+	  object_sizes[subobject][varno] = NULL_TREE;
+
+	break;
+      }
+
     /* Bail out for all other cases.  */
     case GIMPLE_NOP:
-    case GIMPLE_PHI:
     case GIMPLE_ASSIGN:
     case GIMPLE_ASM:
       object_sizes[subobject][varno] = NULL_TREE;
