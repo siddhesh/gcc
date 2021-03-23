@@ -49,6 +49,52 @@ test_builtin_malloc_cond (int cond, __SIZE_TYPE__ *outsz)
 }
 /* { dg-final { scan-tree-dump ": maximum dynamic object size _\[0-9\]" "dynobjsz1" } } */
 
+void *
+test_builtin_malloc_condphi (int cond, __SIZE_TYPE__ *outsz)
+{
+  void *ret;
+ 
+  if (cond)
+    ret = __builtin_malloc (32);
+  else
+    ret = __builtin_malloc (64);
+
+  *outsz = __builtin_dynamic_object_size (ret, 0);
+  return ret;
+}
+/* { dg-final { scan-tree-dump ": maximum dynamic object size _\[0-9\]" "dynobjsz1" } } */
+
+void *
+test_builtin_malloc_condphi2 (int cond, __SIZE_TYPE__ *outsz, __SIZE_TYPE__ in)
+{
+  void *ret;
+ 
+  if (cond)
+    ret = __builtin_malloc (in);
+  else
+    ret = __builtin_malloc (64);
+
+  *outsz = __builtin_dynamic_object_size (ret, 0);
+  return ret;
+}
+/* { dg-final { scan-tree-dump ": maximum dynamic object size _\[0-9\]" "dynobjsz1" } } */
+
+void *
+test_builtin_malloc_condphi3 (int cond, __SIZE_TYPE__ *outsz, __SIZE_TYPE__ in,
+			      __SIZE_TYPE__ in2)
+{
+  void *ret;
+ 
+  if (cond)
+    ret = __builtin_malloc (in);
+  else
+    ret = __builtin_malloc (in2);
+
+  *outsz = __builtin_dynamic_object_size (ret, 0);
+  return ret;
+}
+/* { dg-final { scan-tree-dump ": maximum dynamic object size _\[0-9\]" "dynobjsz1" } } */
+
 /* Calloc-like allocator.  */
 
 void *
@@ -78,6 +124,22 @@ test_builtin_calloc_cond (int cond1, int cond2, __SIZE_TYPE__ *outsz)
   return ret;
 }
 /* { dg-final { scan-tree-dump ": maximum dynamic object size \\(sizetype\\) .* \* \\(sizetype\\)" "dynobjsz1" } } */
+
+__SIZE_TYPE__
+test_builtin_calloc_condphi (__SIZE_TYPE__ ccsz, int cond)
+{
+  struct
+    {
+      int a;
+      char b;
+    } bin[ccsz];
+
+  char *ch = __builtin_calloc (ccsz, 10);
+
+  return __builtin_dynamic_object_size (cond ? ch : (void *) &bin, 0);
+}
+/* { dg-final { scan-tree-dump ": maximum dynamic object size _" "dynobjsz1" } } */
+/* { dg-final { scan-tree-dump ": maximum dynamic object size ccsz_" "dynobjsz1" } } */
 
 /* Passthrough functions.  */
 
