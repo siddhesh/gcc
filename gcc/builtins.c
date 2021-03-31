@@ -10724,7 +10724,7 @@ fold_builtin_dyn_object_size (tree ptr, tree ost)
 
   /* If object size expression cannot be evaluated yet, delay folding until
      later.  Maybe subsequent passes will help determining it.  */
-  if (TREE_CODE (ptr) == SSA_NAME
+  if ((TREE_CODE (ptr) == SSA_NAME || TREE_CODE (ptr) == ADDR_EXPR)
       && compute_builtin_dyn_object_size (ptr, object_size_type, &bytes))
     return bytes;
 
