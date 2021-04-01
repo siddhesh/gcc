@@ -636,8 +636,17 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	break;
       }
 
-    /* Bail out for all other cases.  */
     case GIMPLE_NOP:
+      if (SSA_NAME_VAR (var)
+	  && TREE_CODE (SSA_NAME_VAR (var)) == PARM_DECL)
+	object_sizes[subobject][varno] = expr_object_size (osi,
+							   SSA_NAME_VAR (var));
+      else
+	/* Uninitialized SSA names point nowhere.  */
+	object_sizes[subobject][varno] = NULL_TREE;
+      break;
+
+    /* Bail out for all other cases.  */
     case GIMPLE_ASSIGN:
     case GIMPLE_ASM:
       object_sizes[subobject][varno] = NULL_TREE;
