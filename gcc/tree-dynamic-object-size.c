@@ -85,13 +85,22 @@ static bitmap computed[2];
 
 bool compute_builtin_dyn_object_size (tree, int, tree *);
 
+static tree
+build_cond_branch (tree t, tree low_bound, tree unit_size)
+{
+  tree br = fold_build2 (MINUS_EXPR, TREE_TYPE (t), t, low_bound);
+  br = fold_convert (sizetype, br);
+  br = fold_build2 (MULT_EXPR, sizetype, unit_size, br);
+
+  return br;
+}
+
 /* Compute offset of EXPR within VAR.  Return error_mark_node
    if unknown.  */
 
 static tree
 compute_object_offset (const_tree expr, const_tree var)
 {
-  enum tree_code code = PLUS_EXPR;
   tree base, off, t;
 
   if (expr == var)
@@ -134,12 +143,16 @@ compute_object_offset (const_tree expr, const_tree var)
       low_bound = array_ref_low_bound (CONST_CAST_TREE (expr));
       unit_size = array_ref_element_size (CONST_CAST_TREE (expr));
       if (! integer_zerop (low_bound))
-	t = fold_build2 (MINUS_EXPR, TREE_TYPE (t), t, low_bound);
-      if (TREE_CODE (t) == INTEGER_CST && tree_int_cst_sgn (t) < 0)
 	{
-	  code = MINUS_EXPR;
-	  t = fold_build1 (NEGATE_EXPR, TREE_TYPE (t), t);
+	  tree cond = fold_build2 (GE_EXPR, TREE_TYPE (t), t, low_bound);
+	  tree then_br = build_cond_branch (t, low_bound, unit_size);
+	  tree else_br = build_cond_branch (low_bound, t, unit_size);
+
+	  then_br = fold_build2 (PLUS_EXPR, sizetype, base, then_br);
+	  else_br = fold_build2 (MINUS_EXPR, sizetype, base, else_br);
+	  return fold_build3 (COND_EXPR, sizetype, cond, then_br, else_br);
 	}
+
       t = fold_convert (sizetype, t);
       off = fold_build2 (MULT_EXPR, sizetype, unit_size, t);
       break;
@@ -152,7 +165,7 @@ compute_object_offset (const_tree expr, const_tree var)
       return error_mark_node;
     }
 
-  return fold_build2 (code, sizetype, base, off);
+  return fold_build2 (PLUS_EXPR, sizetype, base, off);
 }
 
 /* Return an expression that evaluates to the saturated sum of SZ and OFF.  The
@@ -254,6 +267,114 @@ whole_var_size (struct object_size_info *osi, tree pt_var,
   return true;
 }
 
+/* Get the whole variable encapsulating the pointer PTR, given the whole_var
+   object WHOLE_VAR.  */
+
+static tree
+get_closest_subobject (const_tree ptr, tree whole_var)
+{
+  tree var = TREE_OPERAND (ptr, 0);
+
+  while (var != whole_var
+	 && TREE_CODE (var) != BIT_FIELD_REF
+	 && TREE_CODE (var) != COMPONENT_REF
+	 && TREE_CODE (var) != ARRAY_REF
+	 && TREE_CODE (var) != ARRAY_RANGE_REF
+	 && TREE_CODE (var) != REALPART_EXPR
+	 && TREE_CODE (var) != IMAGPART_EXPR)
+    var = TREE_OPERAND (var, 0);
+
+  if (var != whole_var && TREE_CODE (var) == ARRAY_REF)
+    var = TREE_OPERAND (var, 0);
+
+  if (! TYPE_SIZE_UNIT (TREE_TYPE (var)))
+    var = whole_var;
+  else if (var != whole_var && TREE_CODE (whole_var) == MEM_REF)
+    {
+      tree v = var;
+      /* For &X->fld, compute object size only if fld isn't the last
+	 field, as struct { int i; char c[1]; } is often used instead
+	 of flexible array member.  */
+      while (v && v != whole_var)
+	switch (TREE_CODE (v))
+	  {
+	  case ARRAY_REF:
+	    if (TYPE_SIZE_UNIT (TREE_TYPE (TREE_OPERAND (v, 0)))
+		&& TREE_CODE (TREE_OPERAND (v, 1)) == INTEGER_CST)
+	      {
+		tree domain
+		  = TYPE_DOMAIN (TREE_TYPE (TREE_OPERAND (v, 0)));
+		if (domain
+		    && TYPE_MAX_VALUE (domain)
+		    && TREE_CODE (TYPE_MAX_VALUE (domain))
+		    == INTEGER_CST
+		    && tree_int_cst_lt (TREE_OPERAND (v, 1),
+					TYPE_MAX_VALUE (domain)))
+		  {
+		    v = NULL_TREE;
+		    break;
+		  }
+	      }
+	    v = TREE_OPERAND (v, 0);
+	    break;
+	  case REALPART_EXPR:
+	  case IMAGPART_EXPR:
+	    v = NULL_TREE;
+	    break;
+	  case COMPONENT_REF:
+	    if (TREE_CODE (TREE_TYPE (v)) != ARRAY_TYPE)
+	      {
+		v = NULL_TREE;
+		break;
+	      }
+	    while (v != whole_var && TREE_CODE (v) == COMPONENT_REF)
+	      if (TREE_CODE (TREE_TYPE (TREE_OPERAND (v, 0)))
+		  != UNION_TYPE
+		  && TREE_CODE (TREE_TYPE (TREE_OPERAND (v, 0)))
+		  != QUAL_UNION_TYPE)
+		break;
+	      else
+		v = TREE_OPERAND (v, 0);
+	    if (TREE_CODE (v) == COMPONENT_REF
+		&& TREE_CODE (TREE_TYPE (TREE_OPERAND (v, 0)))
+		== RECORD_TYPE)
+	      {
+		tree fld_chain = DECL_CHAIN (TREE_OPERAND (v, 1));
+		for (; fld_chain; fld_chain = DECL_CHAIN (fld_chain))
+		  if (TREE_CODE (fld_chain) == FIELD_DECL)
+		    break;
+
+		if (fld_chain)
+		  {
+		    v = NULL_TREE;
+		    break;
+		  }
+		v = TREE_OPERAND (v, 0);
+	      }
+	    while (v != whole_var && TREE_CODE (v) == COMPONENT_REF)
+	      if (TREE_CODE (TREE_TYPE (TREE_OPERAND (v, 0)))
+		  != UNION_TYPE
+		  && TREE_CODE (TREE_TYPE (TREE_OPERAND (v, 0)))
+		  != QUAL_UNION_TYPE)
+		break;
+	      else
+		v = TREE_OPERAND (v, 0);
+	    if (v != whole_var)
+	      v = NULL_TREE;
+	    else
+	      v = whole_var;
+	    break;
+	  default:
+	    v = whole_var;
+	    break;
+	  }
+      if (v == whole_var)
+	var = whole_var;
+    }
+
+  return var;
+}
+
 /* Compute __builtin_object_size for PTR, which is a ADDR_EXPR.
    OBJECT_SIZE_TYPE is the second argument from __builtin_object_size.
    If unknown, return unknown[object_size_type].  */
@@ -263,7 +384,7 @@ __attribute__ ((noinline))
 addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
 		      int object_size_type, tree *psize)
 {
-  tree pt_var, pt_var_size = NULL_TREE, bytes;
+  tree pt_var, pt_var_size = NULL_TREE, var_size, bytes;
 
   gcc_assert (TREE_CODE (ptr) == ADDR_EXPR);
 
@@ -279,16 +400,38 @@ addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
   if (!whole_var_size (osi, pt_var, object_size_type, &pt_var_size))
     return false;
 
-  if (!pt_var_size)
-    return false;
-
   /* PTR points to a subobject of whole variable PT_VAR.  */
   if (pt_var != TREE_OPERAND (ptr, 0))
     {
-      bytes = compute_object_offset (TREE_OPERAND (ptr, 0), pt_var);
+      tree var;
+
+      if (object_size_type & 1)
+	var = get_closest_subobject (ptr, pt_var);
+      else
+	var = pt_var;
+
+      if (var != pt_var)
+	{
+	  /* Non-constant sizes of VLAs embedded in structs may not always be
+	     reliable because the TYPE_SIZE_UNIT does not get updated to the
+	     SSA-ized expression during the SSA pass.  Bail out until that is
+	     fixed.  */
+	  if (TREE_CONSTANT (TYPE_SIZE_UNIT (TREE_TYPE (var))))
+	    var_size = TYPE_SIZE_UNIT (TREE_TYPE (var));
+	  else
+	    return false;
+	}
+      else if (!pt_var_size)
+	return false;
+      else
+	var_size = pt_var_size;
+
+      bytes = compute_object_offset (TREE_OPERAND (ptr, 0), var);
       if (bytes != error_mark_node)
-	bytes = saturated_sub_expr (pt_var_size, bytes);
+	bytes = saturated_sub_expr (var_size, bytes);
     }
+  else if (!pt_var_size)
+    return false;
   else
     bytes = pt_var_size;
 
@@ -466,13 +609,14 @@ compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize)
 static tree
 expr_object_size (struct object_size_info *osi, tree value)
 {
+  int object_size_type = osi->object_size_type;
   tree bytes = NULL_TREE;
 
   if (TREE_CODE (value) == WITH_SIZE_EXPR)
     value = TREE_OPERAND (value, 0);
 
   if (TREE_CODE (value) == ADDR_EXPR)
-    addr_dyn_object_size (osi, value, osi->object_size_type, &bytes);
+    addr_dyn_object_size (osi, value, object_size_type, &bytes);
 
   if (bytes)
     STRIP_NOPS (bytes);
@@ -534,7 +678,7 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
   else if (TREE_CODE (op0) == ADDR_EXPR)
     {
       /* op0 will be ADDR_EXPR here.  */
-      addr_dyn_object_size (osi, op0, osi->object_size_type, &bytes);
+      addr_dyn_object_size (osi, op0, object_size_type, &bytes);
       bytes = saturated_sub_expr (bytes, op1);
     }
   else

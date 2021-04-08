@@ -219,6 +219,21 @@ test_dynarray_struct (__SIZE_TYPE__ sz, __SIZE_TYPE__ off)
 /* { dg-final { scan-tree-dump ": maximum dynamic object size .*MIN_EXPR.*" "dynobjsz1" } } */
 
 __SIZE_TYPE__
+test_dynarray_struct_subobj (__SIZE_TYPE__ sz, __SIZE_TYPE__ off)
+{
+  struct
+    {
+      long a;
+      char c[16];
+      int b;
+    } bin[sz];
+
+  return __builtin_dynamic_object_size (&bin[off].c[4], 1);
+}
+
+/* { dg-final { scan-tree-dump ": maximum dynamic object size .*MIN_EXPR.* 12.*" "dynobjsz1" } } */
+
+__SIZE_TYPE__
 test_substring (__SIZE_TYPE__ sz, __SIZE_TYPE__ off)
 {
   char str[sz];
