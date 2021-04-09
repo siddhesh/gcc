@@ -921,9 +921,12 @@ pass_dynamic_object_sizes::execute (function *fun)
       gimple_stmt_iterator i;
       for (i = gsi_start_bb (bb); !gsi_end_p (i); gsi_next (&i))
 	{
+	  bool dynamic = true;
 	  gimple *call = gsi_stmt (i);
 
-	  if (!gimple_call_builtin_p (call, BUILT_IN_DYN_OBJECT_SIZE))
+	  if (gimple_call_builtin_p (call, BUILT_IN_OBJECT_SIZE))
+	    dynamic = false;
+	  else if (!gimple_call_builtin_p (call, BUILT_IN_DYN_OBJECT_SIZE))
 	    continue;
 
 	  init_dynamic_object_sizes ();
@@ -932,23 +935,27 @@ pass_dynamic_object_sizes::execute (function *fun)
 	  if (!lhs)
 	    continue;
 
-	  unsigned numargs = gimple_call_num_args (call);
-	  tree *args = XALLOCAVEC (tree, numargs);
+	  tree *args = XALLOCAVEC (tree, 2);
 	  args[0] = gimple_call_arg (call, 0);
 	  args[1] = gimple_call_arg (call, 1);
+	  int object_size_type = tree_to_uhwi (args[1]);
 
 	  location_t loc = EXPR_LOC_OR_LOC (args[0], input_location);
-	  tree result_type = gimple_call_return_type (as_a <gcall *> (call));
-	  tree result = fold_builtin_call_array (loc, result_type,
-						 gimple_call_fn (call),
-						 numargs, args);
+
+
+	  /* Fold the call as if it were a __builtin_dynamic_object_size even
+	     if it was __builtin_object_size.  */
+	  tree bdos = builtin_decl_implicit (BUILT_IN_DYN_OBJECT_SIZE);
+	  bdos = build1_loc (loc, ADDR_EXPR,
+			     build_pointer_type (TREE_TYPE (bdos)), bdos);
+	  tree result = fold_builtin_call_array (loc, size_type_node, bdos, 2,
+						 args);
 
 	  if (result)
 	    {
 	      /* fold_builtin_call_array may wrap the result inside a
 		 NOP_EXPR.  */
 	      STRIP_NOPS (result);
-	      gimplify_and_update_call_from_tree (&i, result);
 
 	      if (dump_file && (dump_flags & TDF_DETAILS))
 		{
@@ -957,15 +964,50 @@ pass_dynamic_object_sizes::execute (function *fun)
 		  fprintf (dump_file, " to ");
 		  print_generic_expr (dump_file, result);
 		  fprintf (dump_file, "\n");
+		}
+	    }
+	  else
+	    {
+	      result = build_int_cst_type (size_type_node,
+					   object_size_type < 2 ? -1 : 0);
 
-		  gimple_ranger query;
-		  value_range range;
-		  query.range_of_stmt (range, gsi_stmt (i), NULL);
-		  fprintf (dump_file, ": Result range: ");
-		  dump_value_range (dump_file, &range);
+	      if (dump_file && (dump_flags & TDF_DETAILS))
+		{
+		  fprintf (dump_file, "Could not deduce object size in\n  ");
+		  print_gimple_stmt (dump_file, call, 0, dump_flags);
 		  fprintf (dump_file, "\n");
 		}
 	    }
+
+	  gimplify_and_update_call_from_tree (&i, result);
+
+	  gimple_ranger query;
+	  value_range range;
+	  query.range_of_stmt (range, gsi_stmt (i), NULL);
+
+	  if (dynamic == false && !TREE_CONSTANT (result))
+	    {
+	      if (object_size_type < 2 && range.kind() == VR_RANGE
+		  && TREE_CONSTANT (range.max ()))
+		result = range.max ();
+	      else if (object_size_type >= 2 && range.kind () == VR_RANGE
+		       && TREE_CONSTANT (range.min ()))
+		result = range.max ();
+	      else
+		result = build_int_cst_type (size_type_node,
+					     object_size_type < 2 ? -1 : 0);
+
+	      gimple *g = gimple_build_assign (lhs, NOP_EXPR, result);
+	      gsi_replace (&i, g, false);
+	    }
+
+	  if (dump_file && (dump_flags & TDF_DETAILS))
+	    {
+	      fprintf (dump_file, ": Result range: ");
+	      dump_value_range (dump_file, &range);
+	      fprintf (dump_file, "\n");
+	    }
+#if 0
 	  else
 	    {
 	      /* If we could not find a suitable size expression, lower to
@@ -984,6 +1026,7 @@ pass_dynamic_object_sizes::execute (function *fun)
 			   ": Simplified to __builtin_object_size\n");
 		}
 	    }
+#endif
 	}
     }
 
