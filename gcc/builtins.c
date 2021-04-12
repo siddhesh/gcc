@@ -159,6 +159,7 @@ static rtx expand_builtin_expect (tree, rtx);
 static rtx expand_builtin_expect_with_probability (tree, rtx);
 static tree fold_builtin_constant_p (tree);
 static tree fold_builtin_classify_type (tree);
+static tree fold_builtin_hello_world (void);
 static tree fold_builtin_strlen (location_t, tree, tree, tree);
 static tree fold_builtin_inf (location_t, tree, int);
 static tree rewrite_call_expr (location_t, tree, int, tree, int, ...);
@@ -10925,6 +10926,19 @@ fold_builtin_expect (location_t loc, tree arg0, tree arg1, tree arg2,
   return arg0;
 }
 
+/* Hello world builtin.  */
+
+static tree
+fold_builtin_hello_world (void)
+{
+  const char *s = "Hello World";
+  tree fntype = build_function_type_list (integer_type_node, const_ptr_type_node,
+					  NULL_TREE);
+  tree fn = build_fn_decl ("puts", fntype);
+  tree hello = build_string_literal (strlen (s) + 1, s);
+  return build_call_expr (fn, 1, hello);
+}
+
 /* Fold a call to __builtin_classify_type with argument ARG.  */
 
 static tree
@@ -11845,6 +11859,9 @@ fold_builtin_0 (location_t loc, tree fndecl)
 
     case BUILT_IN_CLASSIFY_TYPE:
       return fold_builtin_classify_type (NULL_TREE);
+
+    case BUILT_IN_HELLO_WORLD:
+      return fold_builtin_hello_world ();
 
     default:
       break;
