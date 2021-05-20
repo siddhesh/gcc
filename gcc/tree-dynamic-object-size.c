@@ -871,7 +871,15 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 		    sizes[i] = force_gimple_operand (sizes[i], &seq, true,
 						     NULL);
 
-		    gsi_insert_seq_on_edge_immediate (e, seq);
+		    /* Put the size definition at the very end of the source
+		       block of the PHI edge so that it succeeds any
+		       definitions it may need in that block.  */
+		    gimple_stmt_iterator gsi = gsi_last_bb (e->src);
+		    gimple *s = gsi_stmt (gsi);
+		    if (s && (is_a <gcond *> (s) || is_a <ggoto *> (s)))
+		      gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
+		    else
+		      gsi_insert_seq_after (&gsi, seq, GSI_CONTINUE_LINKING);
 		  }
 
 		add_phi_arg (newphi, sizes[i],
