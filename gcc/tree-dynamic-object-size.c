@@ -605,6 +605,10 @@ expr_object_size (struct object_size_info *osi, tree value)
 
   if (TREE_CODE (value) == ADDR_EXPR)
     addr_dyn_object_size (osi, value, object_size_type, &bytes);
+  /* NULL pointer, set size to zero.  */
+  else if (TREE_CODE (value) == INTEGER_CST
+	   && tree_to_uhwi (value) == 0)
+    bytes = size_zero_node;
 
   if (bytes)
     STRIP_NOPS (bytes);
