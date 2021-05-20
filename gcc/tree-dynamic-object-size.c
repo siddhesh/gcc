@@ -75,6 +75,7 @@ struct object_size_info
 static tree alloc_object_size (const gcall *);
 static tree pass_through_call (const gcall *);
 static void collect_object_sizes_for (struct object_size_info *, tree);
+static void set_object_size (struct object_size_info *, tree, tree, bool);
 
 /* object_sizes[0] is the number of bytes till the end of the object.
    object_sizes[1] is the number of bytes till the end of the subobject
@@ -560,10 +561,10 @@ compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize)
 
       collect_object_sizes_for (&osi, ptr);
 
-      /* Objects that could not be evaluated because of dependency loops.  Do
-	 nothing with them for now.  XXX we probably don't need this anymore.  */
+      /* Some dependency loops remain because those objects' sizes are
+	 unknown.  Walk through them and update uses.  */
       EXECUTE_IF_SET_IN_BITMAP (osi.deploop, 0, i, bi)
-	bitmap_set_bit (computed[subobject], i);
+	set_object_size (&osi, ssa_name (i), NULL_TREE, false);
 
       /* Debugging dumps.  */
       if (dump_file)
@@ -617,7 +618,8 @@ expr_object_size (struct object_size_info *osi, tree value)
 }
 
 static void
-set_object_size (struct object_size_info *osi, tree var, tree sz)
+set_object_size (struct object_size_info *osi, tree var, tree sz,
+		 bool update = true)
 {
   int subobject = osi->object_size_type & 1;
   int varno = SSA_NAME_VERSION (var);
@@ -631,11 +633,28 @@ set_object_size (struct object_size_info *osi, tree var, tree sz)
   if (!bitmap_bit_p (osi->deploop, varno))
     return;
 
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      fprintf (dump_file, "Replacing placeholder ");
+      print_generic_expr (dump_file, oldsz, dump_flags);
+      fprintf (dump_file, " with ");
+      if (sz)
+	print_generic_expr (dump_file, sz, dump_flags);
+      else
+	fprintf (dump_file, "a NULL_TREE");
+      fprintf (dump_file, "\n");
+    }
+
   /* XXX Dependency loops not supported for PHIs with abnormal edges yet.  */
   gcc_assert (!SSA_NAME_OCCURS_IN_ABNORMAL_PHI (oldsz));
 
+  /* We finally couldn't find the size of VAR, so make sure all uses get the
+     unknown size.  */
+  if (!sz)
+    sz = build_int_cst (size_type_node, osi->object_size_type < 2 ? -1 : 0);
+
   /* Force into a form that PHIs will accept.  */
-  if (!is_gimple_variable (sz))
+  else if (!is_gimple_variable (sz))
     {
       gimple_seq seq;
 
@@ -646,7 +665,8 @@ set_object_size (struct object_size_info *osi, tree var, tree sz)
 
   replace_uses_by (oldsz, sz);
   release_ssa_name (oldsz);
-  bitmap_clear_bit (osi->deploop, varno);
+  if (update)
+    bitmap_clear_bit (osi->deploop, varno);
 }
 
 /* Use size of ORIG for DEST.  Return true if
@@ -908,7 +928,6 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
     }
 
   bitmap_set_bit (computed[subobject], varno);
-  bitmap_clear_bit (osi->deploop, varno);
 }
 
 
