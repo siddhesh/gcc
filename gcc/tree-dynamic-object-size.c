@@ -208,11 +208,12 @@ get_whole_var (const_tree ptr)
 }
 
 static bool
-whole_var_size (struct object_size_info *osi, tree pt_var, tree *pt_var_sizep)
+whole_var_size (struct object_size_info *osi, tree pt_var,
+		int object_size_type, tree *pt_var_sizep)
 {
   tree pt_var_size = NULL_TREE;
-  int subobject = osi->object_size_type & 1;
-  int min = osi->object_size_type & 2;
+  int subobject = object_size_type & 1;
+  int min = object_size_type & 2;
 
   if (TREE_CODE (pt_var) == MEM_REF)
     {
@@ -384,7 +385,7 @@ addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
   if (!pt_var)
     return false;
 
-  if (!whole_var_size (osi, pt_var, &pt_var_size))
+  if (!whole_var_size (osi, pt_var, object_size_type, &pt_var_size))
     return false;
 
   /* PTR points to a subobject of whole variable PT_VAR.  */
