@@ -48,7 +48,6 @@ test_builtin_malloc_cond (int cond, __SIZE_TYPE__ *outsz)
   return ret;
 }
 /* { dg-final { scan-tree-dump ": maximum dynamic object size _\[0-9\]" "dynobjsz1" } } */
-/* { dg-final { scan-tree-dump ": Result range: .* \\\[32, 64\\\]" "dynobjsz1" } } */
 
 void *
 test_builtin_malloc_condphi (int cond, __SIZE_TYPE__ *outsz)
@@ -201,7 +200,6 @@ test_dynarray_cond (int cond)
   return __builtin_dynamic_object_size (bin, 0);
 }
 /* { dg-final { scan-tree-dump "maximum dynamic object size _.*" "dynobjsz1" } } */
-/* { dg-final { scan-tree-dump ": Result range: .* \\\[8, 16\\\]" "dynobjsz1" } } */
 
 /* Address expressions.  Object size is a saturated math expression of SZ and
    OFF, so a MIN_EXPR is expected.  */
