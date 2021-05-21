@@ -931,6 +931,27 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 }
 
 
+static void
+punt_to_builtin_object_size (gimple *call, tree *args)
+{
+  /* If we could not find a suitable size expression, lower to
+     __builtin_object_size so that we may at least get a constant
+     lower or higher estimate.  */
+  tree bosfn = builtin_decl_implicit (BUILT_IN_OBJECT_SIZE);
+  gimple_call_set_fndecl (call, bosfn);
+  gimple_call_set_arg (call, 0, args[0]);
+  gimple_call_set_arg (call, 1, args[1]);
+  update_stmt (call);
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      print_generic_expr (dump_file, args[0], dump_flags);
+      fprintf (dump_file,
+	       ": Simplified to __builtin_object_size\n");
+    }
+}
+
+
 /* Initialize data structures for the object size computation.  */
 
 void
@@ -1049,65 +1070,59 @@ pass_dynamic_object_sizes::execute (function *fun)
 	    }
 	  else
 	    {
-	      result = build_int_cst_type (size_type_node,
-					   object_size_type < 2 ? -1 : 0);
-
 	      if (dump_file && (dump_flags & TDF_DETAILS))
 		{
 		  fprintf (dump_file, "Could not deduce object size in\n  ");
 		  print_gimple_stmt (dump_file, call, 0, dump_flags);
 		  fprintf (dump_file, "\n");
 		}
+	      punt_to_builtin_object_size (call, args);
+	      continue;
 	    }
-
-	  gimplify_and_update_call_from_tree (&i, result);
-
-	  gimple_ranger query;
-	  value_range range;
-	  query.range_of_stmt (range, gsi_stmt (i), NULL);
 
 	  if (dynamic == false && !TREE_CONSTANT (result))
 	    {
+	      /* We use the ranger to try and get a static object size
+		 estimate.  It does not always work, but the hope here is that
+		 ranger improvements will continue to improve object size
+		 estimates.  If the ranger fails, we transform the call to
+		 __builtin_object_size () as a fallback.  */
+	      gimple_seq seq = NULL;
+
+	      if (!is_gimple_variable (result))
+		result = force_gimple_operand (result, &seq, true, NULL);
+
+	      /* DCE will get rid of this node later.  */
+	      gimple *g = gimple_build_assign (make_ssa_name (size_type_node),
+					       result);
+	      gimple_seq_add_stmt (&seq, g);
+	      gsi_insert_seq_before (&i, seq, GSI_SAME_STMT);
+
+	      gimple_ranger query;
+	      value_range range;
+
+	      query.range_of_stmt (range, g, NULL);
+
 	      if (object_size_type < 2 && range.kind() == VR_RANGE
 		  && TREE_CONSTANT (range.max ()))
 		result = range.max ();
 	      else if (object_size_type >= 2 && range.kind () == VR_RANGE
 		       && TREE_CONSTANT (range.min ()))
-		result = range.max ();
+		result = range.min ();
 	      else
-		result = build_int_cst_type (size_type_node,
-					     object_size_type < 2 ? -1 : 0);
-
-	      gimple *g = gimple_build_assign (lhs, NOP_EXPR, result);
-	      gsi_replace (&i, g, false);
-	    }
-
-	  if (dump_file && (dump_flags & TDF_DETAILS))
-	    {
-	      fprintf (dump_file, ": Result range: ");
-	      dump_value_range (dump_file, &range);
-	      fprintf (dump_file, "\n");
-	    }
-#if 0
-	  else
-	    {
-	      /* If we could not find a suitable size expression, lower to
-		 __builtin_object_size so that we may at least get a constant
-		 lower or higher estimate.  */
-	      tree bosfn = builtin_decl_implicit (BUILT_IN_OBJECT_SIZE);
-	      gimple_call_set_fndecl (call, bosfn);
-	      gimple_call_set_arg (call, 0, args[0]);
-	      gimple_call_set_arg (call, 1, args[1]);
-	      update_stmt (call);
+		continue;
 
 	      if (dump_file && (dump_flags & TDF_DETAILS))
 		{
-		  print_generic_expr (dump_file, args[0], dump_flags);
-		  fprintf (dump_file,
-			   ": Simplified to __builtin_object_size\n");
+		  fprintf (dump_file, ": Result range: ");
+		  dump_value_range (dump_file, &range);
+		  fprintf (dump_file, "\n");
 		}
+	      g = gimple_build_assign (lhs, result);
+	      gsi_replace (&i, g, false);
 	    }
-#endif
+	  else
+	    gimplify_and_update_call_from_tree (&i, result);
 	}
     }
 
