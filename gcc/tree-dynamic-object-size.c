@@ -1103,12 +1103,14 @@ pass_dynamic_object_sizes::execute (function *fun)
 
 	      query.range_of_stmt (range, g, NULL);
 
-	      if (object_size_type < 2 && range.kind() == VR_RANGE
-		  && TREE_CONSTANT (range.max ()))
-		result = range.max ();
-	      else if (object_size_type >= 2 && range.kind () == VR_RANGE
-		       && TREE_CONSTANT (range.min ()))
-		result = range.min ();
+	      if (object_size_type < 2 && !range.undefined_p ()
+		  && !range.varying_p ())
+		result = wide_int_to_tree (size_type_node,
+					   range.upper_bound ());
+	      else if (object_size_type >= 2 && !range.undefined_p ()
+		  && !range.varying_p ())
+		result = wide_int_to_tree (size_type_node,
+					   range.lower_bound ());
 	      else
 		continue;
 
