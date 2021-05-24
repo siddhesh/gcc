@@ -1112,7 +1112,8 @@ pass_dynamic_object_sizes::execute (function *fun)
 		result = wide_int_to_tree (size_type_node,
 					   range.lower_bound ());
 	      else
-		continue;
+		result = build_int_cst (size_type_node,
+					object_size_type < 2 ? -1 : 0);
 
 	      if (dump_file && (dump_flags & TDF_DETAILS))
 		{
