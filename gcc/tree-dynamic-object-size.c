@@ -173,6 +173,19 @@ saturated_sub_expr (tree sz, tree off)
 	off = fold_convert (sizetype, off);
     }
 
+  tree max_off = fold_build2 (RSHIFT_EXPR, sizetype, TYPE_MAX_VALUE (sizetype),
+			      size_one_node);
+
+  /* Consider offsets larger than SIZE_MAX / 2 to be negative to emulate
+     ssize_t.  Allow integer underflow here because it is still a more
+     restrictive result than returning unknown size.  This relevant only for
+     modes 0 and 1 since we want to try and avoid undefined behaviour for the
+     sake of _FORTIFY_SOURCE.  For modes 2 and 3 we assume valid user code.  */
+  tree cond = fold_build2 (GT_EXPR, sizetype, off, max_off);
+  tree neg_off = fold_build1 (NEGATE_EXPR, sizetype, off);
+
+  off = fold_build3 (COND_EXPR, sizetype, cond, neg_off, off);
+
   tree res = fold_build2 (MIN_EXPR, sizetype, sz, off);
   return fold_build2 (MINUS_EXPR, sizetype, sz, res);
 }
