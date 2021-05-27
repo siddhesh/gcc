@@ -484,16 +484,64 @@ expr_object_size (struct object_size_info *osi, tree value)
    the object size might need reexamination later.  */
 
 static void
-set_object_size_ssa (struct object_size_info *osi, tree dest, tree orig)
+set_object_size_ssa (struct object_size_info *osi, tree dest, tree orig,
+		     tree offset = NULL_TREE)
 {
   int subobject = osi->object_size_type & 1;
 
   collect_object_sizes_for (osi, orig);
 
-  object_sizes[subobject][SSA_NAME_VERSION (dest)] =
-    object_sizes[subobject][SSA_NAME_VERSION (orig)];
+  tree sz = object_sizes[subobject][SSA_NAME_VERSION (orig)];
+
+  if (sz && offset)
+    sz = saturated_sub_expr (sz, offset);
+
+  object_sizes[subobject][SSA_NAME_VERSION (dest)] = sz;
 }
 
+/* Compute object_sizes for VAR, defined to the result of an assignment
+   with operator POINTER_PLUS_EXPR.  Return true if the object size might
+   need reexamination  later.  */
+
+static void
+plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
+{
+  int object_size_type = osi->object_size_type;
+  unsigned int varno = SSA_NAME_VERSION (var);
+  tree op0, op1, bytes;
+
+  if (gimple_assign_rhs_code (stmt) == POINTER_PLUS_EXPR)
+    {
+      op0 = gimple_assign_rhs1 (stmt);
+      op1 = gimple_assign_rhs2 (stmt);
+    }
+  else if (gimple_assign_rhs_code (stmt) == ADDR_EXPR)
+    {
+      tree rhs = TREE_OPERAND (gimple_assign_rhs1 (stmt), 0);
+      gcc_assert (TREE_CODE (rhs) == MEM_REF);
+      op0 = TREE_OPERAND (rhs, 0);
+      op1 = TREE_OPERAND (rhs, 1);
+    }
+  else
+    gcc_unreachable ();
+
+  /* Handle PTR + OFFSET here.  */
+  if (TREE_CODE (op0) == SSA_NAME)
+    {
+      set_object_size_ssa (osi, var, op0, op1);
+      bytes = object_sizes[object_size_type & 1][varno];
+    }
+  else if (TREE_CODE (op0) == ADDR_EXPR)
+    {
+      /* op0 will be ADDR_EXPR here.  */
+      addr_dyn_object_size (osi, op0, osi->object_size_type, &bytes);
+      bytes = saturated_sub_expr (bytes, op1);
+    }
+  else
+    bytes = NULL_TREE;
+
+  object_sizes[object_size_type & 1][varno] = bytes;
+}
 
 /* Compute object_sizes for PTR, defined to the result of a call.  */
 
@@ -552,6 +600,25 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 
   switch (gimple_code (stmt))
     {
+    case GIMPLE_ASSIGN:
+      {
+	tree rhs = gimple_assign_rhs1 (stmt);
+	if (gimple_assign_rhs_code (stmt) == POINTER_PLUS_EXPR
+	    || (gimple_assign_rhs_code (stmt) == ADDR_EXPR
+		&& TREE_CODE (TREE_OPERAND (rhs, 0)) == MEM_REF))
+	  plus_stmt_object_size (osi, var, stmt);
+	else if (gimple_assign_single_p (stmt)
+		 || gimple_assign_unary_nop_p (stmt))
+	  {
+	    if (TREE_CODE (rhs) == SSA_NAME
+		&& POINTER_TYPE_P (TREE_TYPE (rhs)))
+	      set_object_size_ssa (osi, var, rhs);
+	    else
+	      object_sizes[subobject][varno] = expr_object_size (osi, rhs);
+	  }
+	break;
+      }
+
     case GIMPLE_CALL:
       {
 	gcall *call_stmt = as_a <gcall *> (stmt);
@@ -646,8 +713,6 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	object_sizes[subobject][varno] = NULL_TREE;
       break;
 
-    /* Bail out for all other cases.  */
-    case GIMPLE_ASSIGN:
     case GIMPLE_ASM:
       object_sizes[subobject][varno] = NULL_TREE;
       break;

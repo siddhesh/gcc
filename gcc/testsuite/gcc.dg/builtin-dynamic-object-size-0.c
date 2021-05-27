@@ -200,3 +200,40 @@ test_dynarray_cond (int cond)
   return __builtin_dynamic_object_size (bin, 0);
 }
 /* { dg-final { scan-tree-dump "maximum dynamic object size _.*" "dynobjsz1" } } */
+
+/* Address expressions.  Object size is a saturated math expression of SZ and
+   OFF, so a MIN_EXPR is expected.  */
+
+__SIZE_TYPE__
+test_dynarray_struct (__SIZE_TYPE__ sz, __SIZE_TYPE__ off)
+{
+  struct
+    {
+      long a;
+      char c;
+    } bin[sz];
+
+  return __builtin_dynamic_object_size (&bin[off].c, 0);
+}
+
+/* { dg-final { scan-tree-dump ": maximum dynamic object size .*MIN_EXPR.*" "dynobjsz1" } } */
+
+__SIZE_TYPE__
+test_substring (__SIZE_TYPE__ sz, __SIZE_TYPE__ off)
+{
+  char str[sz];
+
+  return __builtin_dynamic_object_size (&str[off], 0);
+}
+
+/* { dg-final { scan-tree-dump ": maximum dynamic object size sz.*MIN_EXPR.*" "dynobjsz1" } } */
+
+__SIZE_TYPE__
+test_substring_ptrplus (__SIZE_TYPE__ sz, __SIZE_TYPE__ off)
+{
+  int str[sz];
+
+  return __builtin_dynamic_object_size (str + off, 0);
+}
+
+/* { dg-final { scan-tree-dump ": maximum dynamic object size .*MIN_EXPR.*" "dynobjsz1" } } */
