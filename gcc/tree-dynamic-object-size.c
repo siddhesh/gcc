@@ -1032,6 +1032,9 @@ pass_dynamic_object_sizes::execute (function *fun)
 						 gimple_call_fn (call),
 						 numargs, args);
 
+	  if (!result)
+	    result = build_int_cst (size_type_node, tree_to_uhwi (args[1]) < 2 ? -1 : 0);
+
 	  if (result)
 	    {
 	      /* fold_builtin_call_array may wrap the result inside a
@@ -1048,6 +1051,7 @@ pass_dynamic_object_sizes::execute (function *fun)
 		  fprintf (dump_file, "\n");
 		}
 	    }
+#if 0
 	  else
 	    {
 	      /* If we could not find a suitable size expression, lower to
@@ -1066,6 +1070,7 @@ pass_dynamic_object_sizes::execute (function *fun)
 			   ": Simplified to __builtin_object_size\n");
 		}
 	    }
+#endif
 	}
     }
 
