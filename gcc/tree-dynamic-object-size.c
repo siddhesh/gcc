@@ -429,7 +429,16 @@ addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
 
       bytes = compute_object_offset (TREE_OPERAND (ptr, 0), var);
       if (bytes != error_mark_node)
-	bytes = saturated_sub_expr (var_size, bytes);
+	{
+	  /* Do not allow negative offsets into the target variable.  */
+	  tree max_off = fold_build2 (RSHIFT_EXPR, sizetype,
+				      TYPE_MAX_VALUE (sizetype),
+				      size_one_node);
+	  tree cond = fold_build2 (GE_EXPR, sizetype, bytes, max_off);
+
+	  bytes = fold_build3 (COND_EXPR, sizetype, cond, size_zero_node,
+			       saturated_sub_expr (var_size, bytes));
+	}
     }
   else if (!pt_var_size)
     return false;
