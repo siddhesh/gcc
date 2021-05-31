@@ -434,10 +434,28 @@ addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
 	  tree max_off = fold_build2 (RSHIFT_EXPR, sizetype,
 				      TYPE_MAX_VALUE (sizetype),
 				      size_one_node);
-	  tree cond = fold_build2 (GE_EXPR, sizetype, bytes, max_off);
+	  tree cond = fold_build2 (GT_EXPR, sizetype, bytes, max_off);
 
 	  bytes = fold_build3 (COND_EXPR, sizetype, cond, size_zero_node,
 			       saturated_sub_expr (var_size, bytes));
+	}
+      if (var != pt_var
+	  && pt_var_size
+	  && bytes != error_mark_node)
+	{
+	  tree bytes2 = compute_object_offset (TREE_OPERAND (ptr, 0), pt_var);
+	  if (bytes2 != error_mark_node)
+	    {
+	      tree max_off = fold_build2 (RSHIFT_EXPR, sizetype,
+					  TYPE_MAX_VALUE (sizetype),
+					  size_one_node);
+	      tree cond = fold_build2 (GT_EXPR, sizetype, bytes2, max_off);
+
+	      bytes2 = fold_build3 (COND_EXPR, sizetype, cond, size_zero_node,
+				    saturated_sub_expr (pt_var_size, bytes2));
+
+	      bytes = fold_build2 (MIN_EXPR, sizetype, bytes, bytes2);
+	    }
 	}
     }
   else if (!pt_var_size)
