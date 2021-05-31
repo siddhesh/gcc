@@ -463,7 +463,7 @@ addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
   else
     bytes = pt_var_size;
 
-  *psize = bytes;
+  *psize = bytes == error_mark_node ? NULL_TREE : bytes;
   return true;
 }
 
