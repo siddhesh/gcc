@@ -59,6 +59,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-fold.h"
 #include "gimple-iterator.h"
 #include "tree-cfg.h"
+#include "tree-dfa.h"
 #include "stringpool.h"
 #include "attribs.h"
 #include "builtins.h"
@@ -457,7 +458,7 @@ pass_through_call (const gcall *call)
 
 
 static void
-emit_size_stmts (gimple *stmt, tree wholesize_ssa,
+emit_size_stmts (object_size_info *osi, gimple *stmt, tree wholesize_ssa,
 		 tree wholesize_expr, tree size_ssa, tree size_expr)
 {
   gimple_seq seq = NULL;
@@ -482,7 +483,14 @@ emit_size_stmts (gimple *stmt, tree wholesize_ssa,
      statements involved in evaluation of the object size expression precede
      the definition statement.  For parameters, we don't have a definition
      statement, so insert into the first code basic block.  */
-  gimple_stmt_iterator i = gsi_for_stmt (stmt);
+  gimple_stmt_iterator i;
+  if (gimple_code (stmt) == GIMPLE_NOP)
+    {
+      basic_block first_bb = single_succ (ENTRY_BLOCK_PTR_FOR_FN (osi->fun));
+      i = gsi_start_bb (first_bb);
+    }
+  else
+    i = gsi_for_stmt (stmt);
   gsi_insert_seq_before (&i, seq, GSI_CONTINUE_LINKING);
 }
 
@@ -540,8 +548,8 @@ size_bound_expr (tree sz)
 }
 
 static void
-eval_size_expr (tree var, tree wholesize, tree *wholesize_expr,
-		tree size, tree *size_expr)
+eval_size_expr (struct object_size_info *osi, tree var, tree wholesize,
+		tree *wholesize_expr, tree size, tree *size_expr)
 {
   if (size_expr != NULL)
     {
@@ -558,7 +566,7 @@ eval_size_expr (tree var, tree wholesize, tree *wholesize_expr,
 	}
       else
 	{
-	  emit_size_stmts (stmt, wholesize, *wholesize_expr, size,
+	  emit_size_stmts (osi, stmt, wholesize, *wholesize_expr, size,
 			   size_bound_expr (*size_expr));
 	  delete wholesize_expr;
 	  delete size_expr;
@@ -609,7 +617,7 @@ gimplify_size_exprs (object_size_info *osi, tree ptr)
   for (int object_size_type = 0; object_size_type <= 3; object_size_type++)
     EXECUTE_IF_SET_IN_BITMAP (computed[object_size_type], 0, i, bi)
       {
-	eval_size_expr (ssa_name (i),
+	eval_size_expr (osi, ssa_name (i),
 			object_whole_sizes[object_size_type][i],
 			object_whole_size_exprs[object_size_type][i],
 			object_sizes[object_size_type][i],
@@ -936,6 +944,71 @@ call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
   cache_object_size_copy (osi, SSA_NAME_VERSION (ptr), sz, sz);
 }
 
+/* Find size of an object passed as a parameter to the function.  */
+
+static void
+parm_object_size (struct object_size_info *osi, tree var)
+{
+  tree parm = SSA_NAME_VAR (var);
+  unsigned varno = SSA_NAME_VERSION (var);
+  tree sz = NULL_TREE, wholesz = NULL_TREE;
+
+  if (dump_file)
+  {
+	  fprintf (dump_file, "Object is a parameter: ");
+	  print_generic_expr (dump_file, parm, dump_flags);
+	  fprintf (dump_file, " which is %s a pointer type\n",
+			  POINTER_TYPE_P (TREE_TYPE (parm)) ? "" : "not");
+  }
+
+  if (POINTER_TYPE_P (TREE_TYPE (parm)))
+    {
+      /* Look for access attribute.  */
+      rdwr_map rdwr_idx;
+
+      tree fndecl = osi->fun->decl;
+      const attr_access *access = get_parm_access (rdwr_idx, parm, fndecl);
+      tree typesize = TYPE_SIZE_UNIT (TREE_TYPE (TREE_TYPE (parm)));
+
+      if (access && access->sizarg != UINT_MAX)
+	{
+	  tree fnargs = DECL_ARGUMENTS (fndecl);
+	  tree arg = NULL_TREE;
+	  unsigned argpos = 0;
+
+	  /* Walk through the parameters to pick the size parameter and safely
+	     scale it by the type size.  */
+	  for (arg = fnargs; argpos != access->sizarg && arg;
+	       arg = TREE_CHAIN (arg), ++argpos);
+
+	  if (arg != NULL_TREE && INTEGRAL_TYPE_P (TREE_TYPE (arg)))
+	    {
+	      tree arrsz = get_or_create_ssa_default_def (osi->fun, arg);
+	      if (arrsz != NULL_TREE)
+		{
+		  arrsz = fold_convert (sizetype, arrsz);
+		  if (typesize)
+		    {
+		      tree res = fold_build2 (MULT_EXPR, sizetype, arrsz,
+					      typesize);
+		      tree check = fold_build2 (EXACT_DIV_EXPR, sizetype,
+						TYPE_MAX_VALUE (sizetype),
+						typesize);
+		      check = fold_build2 (LT_EXPR, sizetype, arrsz, check);
+		      arrsz = fold_build3 (COND_EXPR, sizetype, check, res,
+					   size_zero_node);
+		    }
+		}
+	      sz = wholesz = arrsz;
+	    }
+	}
+    }
+  else
+      expr_object_size (osi, parm, &sz, &wholesz);
+
+  cache_object_size_copy (osi, varno, sz, wholesz);
+}
+
 /* Compute object sizes for VAR.
 
    - For allocation GIMPLE_CALL like malloc or calloc object size is the size
@@ -945,7 +1018,9 @@ call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
    - For GIMPLE_PHI, compute a PHI node with sizes of all branches in the PHI
      node of the object.
    - For GIMPLE_ASSIGN, return the size of the object the SSA name points
-     to.  */
+     to.
+   - For GIMPLE_NOP, if the variable is a function parameter, compute the size
+     of the parameter.  */
 
 static void
 collect_object_sizes_for (struct object_size_info *osi, tree var)
@@ -1073,8 +1148,15 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	break;
       }
 
-    /* Bail out for all other cases.  */
     case GIMPLE_NOP:
+      if (SSA_NAME_VAR (var) && TREE_CODE (SSA_NAME_VAR (var)) == PARM_DECL)
+	parm_object_size (osi, var);
+      else
+	/* Uninitialized SSA names point nowhere.  */
+	cache_object_size_copy (osi, varno, NULL_TREE, NULL_TREE);
+      break;
+
+    /* Bail out for all other cases.  */
     case GIMPLE_ASM:
       cache_object_size_copy (osi, varno, NULL_TREE, NULL_TREE);
       break;

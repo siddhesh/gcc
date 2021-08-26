@@ -256,6 +256,15 @@ test_substring_ptrplus (size_t sz, size_t off)
   return __builtin_dynamic_object_size (str + off, 0);
 }
 
+size_t
+__attribute__ ((noinline))
+__attribute__ ((access (__read_write__, 1, 2)))
+test_parmsz (void *obj, size_t sz, size_t off)
+{
+  return __builtin_dynamic_object_size (obj + off, 0);
+}
+
+
 int
 main (int argc, char **argv)
 {
@@ -337,6 +346,19 @@ main (int argc, char **argv)
   if (test_deploop (128, 4) != 128)
     FAIL ();
   if (test_deploop (128, 129) != 32)
+    FAIL ();
+
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1, -1)!= 0)
+    FAIL ();
+
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1, 0)
+      != __builtin_strlen (argv[0]) + 1)
+    FAIL ();
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1,
+		   __builtin_strlen (argv[0]))!= 1)
+    FAIL ();
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1,
+		   __builtin_strlen (argv[0]) + 2)!= 0)
     FAIL ();
 
   if (nfails > 0)
