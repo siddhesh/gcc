@@ -185,6 +185,7 @@ static rtx expand_builtin_memory_chk (tree, rtx, machine_mode,
 static void maybe_emit_chk_warning (tree, enum built_in_function);
 static void maybe_emit_sprintf_chk_warning (tree, enum built_in_function);
 static tree fold_builtin_object_size (tree, tree);
+static tree fold_builtin_dyn_object_size (tree, tree);
 static bool check_read_access (tree, tree, tree = NULL_TREE, int = 1);
 static bool compute_objsize_r (tree, int, access_ref *, ssa_name_limit_t &,
 			       pointer_query *);
@@ -10688,6 +10689,7 @@ expand_builtin (tree exp, rtx target, rtx subtarget, machine_mode mode,
       return const0_rtx;
 
     case BUILT_IN_OBJECT_SIZE:
+    case BUILT_IN_DYN_OBJECT_SIZE:
       return expand_builtin_object_size (exp);
 
     case BUILT_IN_MEMCPY_CHK:
@@ -12093,6 +12095,9 @@ fold_builtin_2 (location_t loc, tree expr, tree fndecl, tree arg0, tree arg1)
     case BUILT_IN_OBJECT_SIZE:
       return fold_builtin_object_size (arg0, arg1);
 
+    case BUILT_IN_DYN_OBJECT_SIZE:
+      return fold_builtin_dyn_object_size (arg0, arg1);
+
     case BUILT_IN_ATOMIC_ALWAYS_LOCK_FREE:
       return fold_builtin_atomic_always_lock_free (arg0, arg1);
 
@@ -12739,7 +12744,10 @@ fold_builtin_next_arg (tree exp, bool va_start_p)
 }
 
 
-/* Expand a call EXP to __builtin_object_size.  */
+/* Expand a call EXP to __builtin_object_size or
+   __builtin_dynamic_object_size.  If the builtin survived up to this point
+   then it means we have failed to get an object size, so replace the call with
+   0 or -1 depending on the object size type argument.  */
 
 static rtx
 expand_builtin_object_size (tree exp)
@@ -13734,6 +13742,29 @@ maybe_emit_free_warning (tree exp)
     }
 }
 
+/* Validate arguments to __builtin_object_size and
+   __builtin_dynamic_object_size.  If both arguments are valid, return the
+   object size type in OSTP.  */
+
+static bool
+valid_object_size_args (const tree ptr, tree ost, int *ostp)
+{
+  if (!validate_arg (ptr, POINTER_TYPE)
+      || !validate_arg (ost, INTEGER_TYPE))
+    return false;
+
+  STRIP_NOPS (ost);
+
+  if (TREE_CODE (ost) != INTEGER_CST
+      || tree_int_cst_sgn (ost) < 0
+      || compare_tree_int (ost, 3) > 0)
+    return false;
+
+  *ostp = tree_to_shwi (ost);
+
+  return true;
+}
+
 /* Fold a call to __builtin_object_size with arguments PTR and OST,
    if possible.  */
 
@@ -13743,18 +13774,8 @@ fold_builtin_object_size (tree ptr, tree ost)
   unsigned HOST_WIDE_INT bytes;
   int object_size_type;
 
-  if (!validate_arg (ptr, POINTER_TYPE)
-      || !validate_arg (ost, INTEGER_TYPE))
+  if (!valid_object_size_args (ptr, ost, &object_size_type))
     return NULL_TREE;
-
-  STRIP_NOPS (ost);
-
-  if (TREE_CODE (ost) != INTEGER_CST
-      || tree_int_cst_sgn (ost) < 0
-      || compare_tree_int (ost, 3) > 0)
-    return NULL_TREE;
-
-  object_size_type = tree_to_shwi (ost);
 
   /* __builtin_object_size doesn't evaluate side-effects in its arguments;
      if there are any side-effects, it returns (size_t) -1 for types 0 and 1
@@ -13777,6 +13798,26 @@ fold_builtin_object_size (tree ptr, tree ost)
 	  && wi::fits_to_tree_p (bytes, size_type_node))
 	return build_int_cstu (size_type_node, bytes);
     }
+
+  return NULL_TREE;
+}
+
+/* Fold a call to __builtin_dynamic_object_size with arguments PTR and OST,
+   if possible.  */
+
+static tree
+fold_builtin_dyn_object_size (tree ptr, tree ost)
+{
+  int object_size_type;
+
+  if (!valid_object_size_args (ptr, ost, &object_size_type))
+    return NULL_TREE;
+
+  /* __builtin_dynamic_object_size doesn't evaluate side-effects in its
+     arguments; if there are any side-effects, it returns (size_t) -1 for types
+     0 and 1 and (size_t) 0 for types 2 and 3.  */
+  if (TREE_SIDE_EFFECTS (ptr))
+    return build_int_cst_type (size_type_node, object_size_type < 2 ? -1 : 0);
 
   return NULL_TREE;
 }
