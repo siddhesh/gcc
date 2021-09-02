@@ -74,6 +74,7 @@ along with GCC; see the file COPYING3.  If not see
       NEXT_PASS (pass_all_early_optimizations);
       PUSH_INSERT_PASSES_WITHIN (pass_all_early_optimizations)
 	  NEXT_PASS (pass_remove_cgraph_callee_edges);
+	  NEXT_PASS (pass_early_dynamic_object_sizes);
 	  NEXT_PASS (pass_object_sizes, true /* insert_min_max_p */);
 	  /* Don't record nonzero bits before IPA to avoid
 	     using too much memory.  */
@@ -201,6 +202,7 @@ along with GCC; see the file COPYING3.  If not see
       NEXT_PASS (pass_backprop);
       NEXT_PASS (pass_phiprop);
       NEXT_PASS (pass_forwprop);
+      NEXT_PASS (pass_dynamic_object_sizes);
       NEXT_PASS (pass_object_sizes, false /* insert_min_max_p */);
       /* pass_build_alias is a dummy pass that ensures that we
 	 execute TODO_rebuild_alias at this point.  */
@@ -369,6 +371,7 @@ along with GCC; see the file COPYING3.  If not see
       /* Perform simple scalar cleanup which is constant/copy propagation.  */
       NEXT_PASS (pass_ccp, true /* nonzero_p */);
       NEXT_PASS (pass_post_ipa_warn);
+      NEXT_PASS (pass_dynamic_object_sizes);
       NEXT_PASS (pass_object_sizes);
       /* Fold remaining builtins.  */
       NEXT_PASS (pass_fold_builtins);
