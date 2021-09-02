@@ -1,0 +1,7 @@
+/* { dg-do run } */
+/* { dg-options "-O2" } */
+/* { dg-require-effective-target alloca } */
+
+#define DYNAMIC_OBJECT_SIZE
+#define __builtin_object_size __builtin_dynamic_object_size
+#include "builtin-object-size-2.c"
