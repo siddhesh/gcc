@@ -219,6 +219,43 @@ test_deploop (size_t sz, size_t cond)
   return __builtin_dynamic_object_size (bin, 0);
 }
 
+/* Address expressions.  Object size is a saturated math expression of SZ and
+   OFF, so a MIN_EXPR is expected.  */
+
+struct dynarray_struct
+{
+  long a;
+  char c[16];
+  int b;
+};
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct (size_t sz, size_t off)
+{
+  struct dynarray_struct bin[sz];
+
+  return __builtin_dynamic_object_size (&bin[off].c, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_substring (size_t sz, size_t off)
+{
+  char str[sz];
+
+  return __builtin_dynamic_object_size (&str[off], 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_substring_ptrplus (size_t sz, size_t off)
+{
+  int str[sz];
+
+  return __builtin_dynamic_object_size (str + off, 0);
+}
+
 int
 main (int argc, char **argv)
 {
@@ -278,6 +315,20 @@ main (int argc, char **argv)
   if (test_passthrough_nonssa (argv[0]) != __builtin_strlen (argv[0]) + 1)
      FAIL ();
   if (test_dynarray (__builtin_strlen (argv[0])) != __builtin_strlen (argv[0]))
+    FAIL ();
+  if (test_dynarray_struct (42, 4) !=
+      ((42 - 4) * sizeof (struct dynarray_struct)
+       - __builtin_offsetof (struct dynarray_struct, c)))
+    FAIL ();
+  if (test_dynarray_struct (42, 48) != 0)
+    FAIL ();
+  if (test_substring (128, 4) != 128 - 4)
+    FAIL ();
+  if (test_substring (128, 142) != 0)
+    FAIL ();
+  if (test_substring_ptrplus (128, 4) != (128 - 4) * sizeof (int))
+    FAIL ();
+  if (test_substring_ptrplus (128, 142) != 0)
     FAIL ();
   if (test_dynarray_cond (0) != 16)
     FAIL ();
