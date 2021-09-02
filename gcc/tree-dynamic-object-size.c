@@ -63,11 +63,14 @@ along with GCC; see the file COPYING3.  If not see
 #include "attribs.h"
 #include "builtins.h"
 #include "print-tree.h"
+#include "gimplify-me.h"
 
 struct object_size_info
 {
+  struct function *fun;
   int object_size_type;
   bitmap visited;
+  unsigned deploop;
 };
 
 static tree alloc_object_size (const gcall *);
@@ -79,8 +82,14 @@ static void collect_object_sizes_for (struct object_size_info *, tree);
    object_sizes[1] is upper bound for number of bytes till the end of
    the subobject (innermost array or field with address taken).
    object_sizes[2] is lower bound for number of bytes till the end of
-   the object and object_sizes[3] lower bound for subobject.  */
+   the object and object_sizes[3] lower bound for subobject.
+
+   These are merely SSA names of the sizes.  The actual size expressions are in
+   object_size_exprs and they need not be SSA.  */
 static vec<tree> object_sizes[4];
+
+/* The actual size expressions, indexed by the object SSA names.  */
+static vec<tree *>object_size_exprs[4];
 
 /* Bitmaps what object sizes have been computed already.  */
 static bitmap computed[4];
@@ -167,13 +176,126 @@ pass_through_call (const gcall *call)
   return NULL_TREE;
 }
 
+static void
+emit_size_stmts (gimple *stmt, tree size_ssa, tree size_expr)
+{
+  gimple_seq seq = NULL;
+
+  if (!is_gimple_variable (size_expr))
+    size_expr = force_gimple_operand (size_expr, &seq, true, NULL);
+
+  gassign *assign = gimple_build_assign (size_ssa, size_expr);
+  gimple_seq_add_stmt (&seq, assign);
+
+  /* Define object size right after the object is defined.  */
+  gimple_stmt_iterator i = gsi_for_stmt (stmt);
+  gsi_insert_seq_after (&i, seq, GSI_CONTINUE_LINKING);
+}
+
+static void
+emit_size_phi_stmts (gimple *stmt, tree size_ssa, tree *sizes)
+{
+  gphi *newphi = create_phi_node (size_ssa, gimple_bb (stmt));
+  gphi *obj_phi =  as_a <gphi *> (stmt);
+
+  for (unsigned i = 0; i < gimple_phi_num_args (stmt); i++)
+    {
+      /* If we built an expression, we will need to build statements
+	 and insert them on the edge right away.  */
+      if (!is_gimple_variable (sizes[i]))
+	{
+	  gimple_seq seq;
+	  edge e = gimple_phi_arg_edge (obj_phi, i);
+	  sizes[i] = force_gimple_operand (sizes[i], &seq, true, NULL);
+
+	  /* Put the size definition at the very end of the source
+	     block of the PHI edge so that it succeeds any
+	     definitions it may need in that block.  */
+	  gimple_stmt_iterator gsi = gsi_last_bb (e->src);
+	  gimple *s = gsi_stmt (gsi);
+	  if (s && (is_a <gcond *> (s) || is_a <ggoto *> (s)))
+	    gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
+	  else
+	    gsi_insert_seq_after (&gsi, seq, GSI_CONTINUE_LINKING);
+	}
+
+      add_phi_arg (newphi, sizes[i],
+		   gimple_phi_arg_edge (obj_phi, i),
+		   gimple_phi_arg_location (obj_phi, i));
+    }
+}
+
+static void
+eval_size_expr (tree var, tree size, tree *size_expr)
+{
+  if (size_expr != NULL)
+    {
+      gcc_assert (*size_expr != error_mark_node);
+
+      gimple *stmt = SSA_NAME_DEF_STMT (var);
+
+      if (gimple_code (stmt) == GIMPLE_PHI)
+	{
+	  emit_size_phi_stmts (stmt, size, size_expr);
+	  delete[] size_expr;
+	}
+      else
+	{
+	  emit_size_stmts (stmt, size, *size_expr);
+	  delete size_expr;
+	}
+    }
+}
+
+static void
+gimplify_size_exprs (object_size_info *osi, tree ptr)
+{
+  bitmap_iterator bi;
+  unsigned i;
+
+  /* If the size lookup was not successful and we were left with unresolved
+     loop dependencies, then invalidate all size computations.  This is
+     suboptimal and should eventually try to remove only size expressions that
+     depend on the unresolved dependencies, but it's unclear whether
+     maintaining the extra state to manage that is worthwhile.  */
+  if (object_sizes[osi->object_size_type][SSA_NAME_VERSION (ptr)] == NULL_TREE
+      && osi->deploop)
+    {
+      for (int object_size_type = 0; object_size_type <= 3; object_size_type++)
+	{
+	  EXECUTE_IF_SET_IN_BITMAP (computed[object_size_type], 0, i, bi)
+	    {
+	      release_ssa_name (object_sizes[object_size_type][i]);
+	      if (gimple_code (SSA_NAME_DEF_STMT (ssa_name (i))) == GIMPLE_PHI
+		  && object_size_exprs[object_size_type][i])
+		delete [] object_size_exprs[object_size_type][i];
+	      else
+		delete object_size_exprs[object_size_type][i];
+	      object_size_exprs[object_size_type][i] = NULL;
+	    }
+	  bitmap_clear (computed[object_size_type]);
+	}
+      return;
+    }
+
+  /* Gimplify and emit code for all computed size expressions.  */
+  for (int object_size_type = 0; object_size_type <= 3; object_size_type++)
+    EXECUTE_IF_SET_IN_BITMAP (computed[object_size_type], 0, i, bi)
+      {
+	eval_size_expr (ssa_name (i), object_sizes[object_size_type][i],
+			object_size_exprs[object_size_type][i]);
+	object_size_exprs[object_size_type][i] = NULL;
+      }
+}
+
 /* Compute __builtin_dynamic_object_size value for PTR and set *PSIZE to
    the resulting value.  OBJECT_SIZE_TYPE is the second argument to
    __builtin_dynamic_object_size.  Returns true on success and false when the
    object size could not be determined.  */
 
 bool
-compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize)
+compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize,
+				 struct function *fun = NULL)
 {
   gcc_assert (object_size_type >= 0 && object_size_type <= 3);
 
@@ -196,7 +318,10 @@ compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize)
   unsigned int i;
 
   if (num_ssa_names > object_sizes[object_size_type].length ())
-    object_sizes[object_size_type].safe_grow (num_ssa_names, true);
+    {
+      object_sizes[object_size_type].safe_grow (num_ssa_names, true);
+      object_size_exprs[object_size_type].safe_grow (num_ssa_names, true);
+    }
   if (dump_file)
     {
       fprintf (dump_file, "Computing %s dynamic %sobject size for ",
@@ -207,9 +332,12 @@ compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize)
     }
 
   osi.visited = BITMAP_ALLOC (NULL);
+  osi.deploop = 0;
   osi.object_size_type = object_size_type;
+  osi.fun = fun != NULL ? fun : cfun;
 
   collect_object_sizes_for (&osi, ptr);
+  gimplify_size_exprs (&osi, ptr);
 
   /* Debugging dumps.  */
   if (dump_file)
@@ -235,6 +363,73 @@ out:
   return *psize != NULL_TREE;
 }
 
+static void
+maybe_update_dependency_loop (struct object_size_info *osi, unsigned name,
+			      tree sz)
+{
+  if (sz == error_mark_node)
+    osi->deploop++;
+  else if (object_sizes[osi->object_size_type][name]
+	   && (*object_size_exprs[osi->object_size_type][name]
+	       == error_mark_node))
+	osi->deploop--;
+}
+
+/* Add object size to the cache so that it can be reused.  */
+
+static void
+cache_object_size (struct object_size_info *osi, unsigned name, tree *sz)
+{
+  int object_size_type = osi->object_size_type;
+  struct function *fun = osi->fun;
+
+  gcc_assert (sz);
+
+  maybe_update_dependency_loop (osi, name, *sz);
+
+  /* Reuse SSA name if it was created for a dependency loop.  */
+  if (object_sizes[object_size_type][name] != NULL_TREE)
+    gcc_assert (*object_size_exprs[object_size_type][name] == error_mark_node);
+  else
+    object_sizes[object_size_type][name] = make_ssa_name_fn (fun, sizetype, 0);
+  object_size_exprs[object_size_type][name] = sz;
+
+  if (dump_file && (dump_flags & TDF_DETAILS))
+    {
+      fprintf (dump_file, "Caching size for ");
+      print_generic_expr (dump_file, ssa_name (name), dump_flags);
+      fprintf (dump_file, ":: Object size: ");
+      print_generic_expr (dump_file, object_sizes[object_size_type][name],
+			  dump_flags);
+      fprintf (dump_file, " = ");
+      print_generic_expr (dump_file,
+			  *object_size_exprs[object_size_type][name],
+			  dump_flags);
+      fprintf (dump_file, "\n");
+    }
+
+  bitmap_set_bit (computed[object_size_type], name);
+}
+
+/* Copy SZ and then call cache_object_size above.  */
+
+static void
+cache_object_size_copy (struct object_size_info *osi, unsigned name, tree sz)
+{
+  int object_size_type = osi->object_size_type;
+
+  if (sz == NULL_TREE)
+    {
+      if (object_sizes[object_size_type][name] != NULL_TREE)
+	release_ssa_name (object_sizes[object_size_type][name]);
+      object_sizes[object_size_type][name] = NULL_TREE;
+      object_size_exprs[object_size_type][name] = NULL;
+      bitmap_set_bit (computed[object_size_type], name);
+      return;
+    }
+
+  cache_object_size (osi, name, new tree (sz));
+}
 
 /* Use size of ORIG for DEST and return it.  */
 
@@ -242,8 +437,9 @@ static void
 set_object_size_ssa (struct object_size_info *osi, tree dest, tree orig)
 {
   collect_object_sizes_for (osi, orig);
-  object_sizes[osi->object_size_type][SSA_NAME_VERSION (dest)] =
-    object_sizes[osi->object_size_type][SSA_NAME_VERSION (orig)];
+
+  tree sz = object_sizes[osi->object_size_type][SSA_NAME_VERSION (orig)];
+  cache_object_size_copy (osi, SSA_NAME_VERSION (dest), sz);
 }
 
 
@@ -252,11 +448,10 @@ set_object_size_ssa (struct object_size_info *osi, tree dest, tree orig)
 static void
 call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
 {
-  unsigned int varno = SSA_NAME_VERSION (ptr);
-
   gcc_assert (is_gimple_call (call));
 
-  object_sizes[osi->object_size_type][varno] = alloc_object_size (call);
+  cache_object_size_copy (osi, SSA_NAME_VERSION (ptr),
+			  alloc_object_size (call));
 }
 
 
@@ -265,7 +460,9 @@ call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
    - For allocation GIMPLE_CALL like malloc or calloc object size is the size
      of the allocation.
    - For a memcpy like GIMPLE_CALL that always returns one of its arguments,
-     the object size is object size of that argument.  */
+     the object size is object size of that argument.
+   - For GIMPLE_PHI, compute a PHI node with sizes of all branches in the PHI
+     node of the object.  */
 
 static void
 collect_object_sizes_for (struct object_size_info *osi, tree var)
@@ -281,7 +478,10 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
     object_sizes[object_size_type][varno] = NULL_TREE;
   else
     {
-      /* No dependency loop handling at the moment.  */
+      /* Add an SSA name but mark the expression as being an error_mark_node.
+	 When we go back up the stack, the error_mark_node should get
+	 overwritten by a proper expression.  */
+      cache_object_size (osi, varno, &error_mark_node);
       if (dump_file && (dump_flags & TDF_DETAILS))
 	{
 	  fprintf (dump_file, "Found a dependency loop at ");
@@ -316,18 +516,51 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	break;
       }
 
+    case GIMPLE_PHI:
+      {
+	unsigned i, num_args = gimple_phi_num_args (stmt);
+	tree *sizes = new tree[num_args] ();
+
+	/* Bail out if any of the PHI arguments are non-SSA expressions or
+	   if size of an argument cannot be determined.  */
+	for (i = 0; i < gimple_phi_num_args (stmt); i++)
+	  {
+	    tree rhs = gimple_phi_arg_def (stmt, i);
+
+	    if (TREE_CODE (rhs) != SSA_NAME)
+	      break;
+
+	    collect_object_sizes_for (osi, rhs);
+	    tree sz = object_sizes[object_size_type][SSA_NAME_VERSION (rhs)];
+
+	    if (sz == NULL_TREE)
+	      break;
+
+	    sizes[i] = sz;
+	  }
+
+	/* Record all possible sizes to build our PHI node later.  */
+	if (i == gimple_phi_num_args (stmt))
+	  {
+	    cache_object_size (osi, varno, sizes);
+	    break;
+	  }
+	else
+	  delete[] sizes;
+      }
+    /* FALLTHROUGH */
+
     /* Bail out for all other cases.  */
     case GIMPLE_NOP:
-    case GIMPLE_PHI:
     case GIMPLE_ASSIGN:
     case GIMPLE_ASM:
+      cache_object_size_copy (osi, varno, NULL_TREE);
       break;
 
     default:
       gcc_unreachable ();
     }
-
-  bitmap_set_bit (computed[object_size_type], varno);
+  gcc_assert (bitmap_bit_p (computed[object_size_type], varno));
 }
 
 
@@ -344,6 +577,7 @@ init_dynamic_object_sizes (void)
   for (object_size_type = 0; object_size_type <= 3; object_size_type++)
     {
       object_sizes[object_size_type].safe_grow (num_ssa_names, true);
+      object_size_exprs[object_size_type].safe_grow (num_ssa_names, true);
       computed[object_size_type] = BITMAP_ALLOC (NULL);
     }
 }
@@ -359,6 +593,7 @@ fini_dynamic_object_sizes (void)
   for (object_size_type = 0; object_size_type <= 3; object_size_type++)
     {
       object_sizes[object_size_type].release ();
+      object_size_exprs[object_size_type].release ();
       BITMAP_FREE (computed[object_size_type]);
     }
 }
