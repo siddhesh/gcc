@@ -20,6 +20,7 @@ along with GCC; see the file COPYING3.  If not see
 #ifndef GCC_TREE_DYNAMIC_OBJECT_SIZE_H
 #define GCC_TREE_DYNAMIC_OBJECT_SIZE_H
 
-extern bool compute_builtin_dyn_object_size (tree, int, tree *);
+extern bool compute_builtin_dyn_object_size (tree, int, tree *,
+					     struct function * = NULL);
 
 #endif  // GCC_TREE_DYNAMIC_OBJECT_SIZE_H
