@@ -42,9 +42,17 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (q, 0) != (size_t) -1)
     abort ();
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (r, 0)
+      != (x < 0
+	  ? sizeof (a) - __builtin_offsetof (struct A, a) - 9
+	  : sizeof (a) - __builtin_offsetof (struct A, c) - 1))
+    abort ();
+#else
   if (__builtin_object_size (r, 0)
       != sizeof (a) - __builtin_offsetof (struct A, a) - 9)
     abort ();
+#endif
   if (x < 6)
     r = &w[2].a[1];
   else
@@ -58,9 +66,17 @@ test1 (void *q, int x)
   if (__builtin_object_size (&y.b, 0)
       != sizeof (a) - __builtin_offsetof (struct A, b))
     abort ();
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (r, 0)
+      != (x < 6
+	  ? 2 * sizeof (w[0]) - __builtin_offsetof (struct A, a) - 1
+	  : sizeof (a) - __builtin_offsetof (struct A, a) - 6))
+    abort ();
+#else
   if (__builtin_object_size (r, 0)
       != 2 * sizeof (w[0]) - __builtin_offsetof (struct A, a) - 1)
     abort ();
+#endif
   if (x < 20)
     r = malloc (30);
   else
@@ -119,12 +135,21 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (&extb[5], 0) != sizeof (extb) - 5)
     abort ();
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (var, 0) != x + 10)
+    abort ();
+  if (__builtin_object_size (var + 10, 0) != x)
+    abort ();
+  if (__builtin_object_size (&var[5], 0) != x + 5)
+    abort ();
+#else
   if (__builtin_object_size (var, 0) != (size_t) -1)
     abort ();
   if (__builtin_object_size (var + 10, 0) != (size_t) -1)
     abort ();
   if (__builtin_object_size (&var[5], 0) != (size_t) -1)
     abort ();
+#endif
   if (__builtin_object_size (zerol, 0) != 0)
     abort ();
   if (__builtin_object_size (&zerol, 0) != 0)
@@ -165,6 +190,9 @@ test2 (void)
   struct B { char buf1[10]; char buf2[10]; } a;
   char *r, buf3[20];
   int i;
+#ifdef DYNAMIC_OBJECT_SIZE
+  size_t dyn_res;
+#endif
 
   if (sizeof (a) != 20)
     return;
@@ -181,8 +209,26 @@ test2 (void)
       else if (i == l1 + 2)
 	r = &a.buf1[9];
     }
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res = sizeof (buf3);
+
+  for (i = 0; i < 4; ++i)
+    {
+      if (i == l1 - 1)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf1) - 1;
+      else if (i == l1)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf2) - 7;
+      else if (i == l1 + 1)
+	dyn_res = sizeof (buf3) - 5;
+      else if (i == l1 + 2)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf1) - 9;
+    }
+  if (__builtin_object_size (r, 0) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 0) != 20)
     abort ();
+#endif
   r = &buf3[20];
   for (i = 0; i < 4; ++i)
     {
@@ -195,13 +241,44 @@ test2 (void)
       else if (i == l1 + 2)
 	r = &a.buf1[9];
     }
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res = sizeof (buf3) - 20;
+
+  for (i = 0; i < 4; ++i)
+    {
+      if (i == l1 - 1)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf1) - 7;
+      else if (i == l1)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf2) - 7;
+      else if (i == l1 + 1)
+	dyn_res = sizeof (buf3) - 5;
+      else if (i == l1 + 2)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf1) - 9;
+    }
+  if (__builtin_object_size (r, 0) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 0) != 15)
     abort ();
+#endif
   r += 8;
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res -= 8;
+  if (__builtin_object_size (r, 0) != dyn_res)
+    abort ();
+  if (dyn_res >= 6)
+    {
+      if (__builtin_object_size (r + 6, 0) != dyn_res - 6)
+	abort ();
+    }
+  else if (__builtin_object_size (r + 6, 0) != 0)
+    abort ();
+#else
   if (__builtin_object_size (r, 0) != 7)
     abort ();
   if (__builtin_object_size (r + 6, 0) != 1)
     abort ();
+#endif
   r = &buf3[18];
   for (i = 0; i < 4; ++i)
     {
@@ -214,8 +291,31 @@ test2 (void)
       else if (i == l1 + 2)
 	r = &a.buf1[4];
     }
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res = sizeof (buf3) - 18;
+
+  for (i = 0; i < 4; ++i)
+    {
+      if (i == l1 - 1)
+	  dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf1) - 9;
+      else if (i == l1)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf2) - 9;
+      else if (i == l1 + 1)
+	dyn_res = sizeof (buf3) - 5;
+      else if (i == l1 + 2)
+	dyn_res = sizeof (a) - __builtin_offsetof (struct B, buf1) - 4;
+    }
+  if (dyn_res >= 12)
+    {
+      if (__builtin_object_size (r + 12, 0) != dyn_res - 12)
+	abort ();
+    }
+  else if (__builtin_object_size (r + 12, 0) != 0)
+    abort ();
+#else
   if (__builtin_object_size (r + 12, 0) != 4)
     abort ();
+#endif
 }
 
 void
@@ -358,6 +458,10 @@ test5 (size_t x)
 
   for (i = 0; i < x; ++i)
     p = p + 4;
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (p, 0) != sizeof (buf) - 8 - 4 * x)
+    abort ();
+#else
   /* My understanding of ISO C99 6.5.6 is that a conforming
      program will not end up with p equal to &buf[0]
      through &buf[7], i.e. calling this function with say
@@ -367,6 +471,7 @@ test5 (size_t x)
      it would be 64 (or conservative (size_t) -1 == unknown).  */
   if (__builtin_object_size (p, 0) != sizeof (buf) - 8)
     abort ();
+#endif
   memset (p, ' ', sizeof (buf) - 8 - 4 * 4);
 }
 
@@ -380,8 +485,13 @@ test6 (size_t x)
 
   for (i = 0; i < x; ++i)
     p = p + 4;
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (p, 0) != sizeof (t) - 8 - 4 * x)
+    abort ();
+#else
   if (__builtin_object_size (p, 0) != sizeof (t) - 8)
     abort ();
+#endif
   memset (p, ' ', sizeof (t) - 8 - 4 * 4);
 }
 

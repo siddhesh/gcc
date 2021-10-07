@@ -32,6 +32,9 @@ test1 (void *q, int x)
   void *p = &a.a[3], *r;
   char var[x + 10];
   struct A vara[x + 10];
+#ifdef DYNAMIC_OBJECT_SIZE
+  size_t dyn_res;
+#endif
   if (x < 0)
     r = &a.a[9];
   else
@@ -43,8 +46,15 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (q, 1) != (size_t) -1)
     abort ();
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (x < 0
+      ? __builtin_object_size (r, 1) != sizeof (a.a) - 9
+      : __builtin_object_size (r, 1) != sizeof (a.c) - 1)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (a.c) - 1)
     abort ();
+#endif
   if (x < 6)
     r = &w[2].a[1];
   else
@@ -55,36 +65,74 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (&y.b, 1) != sizeof (a.b))
     abort ();
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (x < 6
+      ? __builtin_object_size (r, 1) != sizeof (a.a) - 1
+      : __builtin_object_size (r, 1) != sizeof (a.a) - 6)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (a.a) - 1)
     abort ();
+#endif
   if (x < 20)
     r = malloc (30);
   else
     r = calloc (2, 16);
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (x < 20
+      ? __builtin_object_size (r, 1) != 30
+      : __builtin_object_size (r, 1) != 2 * 16)
+    abort ();
+#else
   /* We may duplicate this test onto the two exit paths.  On one path
      the size will be 32, the other it will be 30.  If we don't duplicate
      this test, then the size will be 32.  */
   if (__builtin_object_size (r, 1) != 2 * 16
       && __builtin_object_size (r, 1) != 30)
     abort ();
+#endif
   if (x < 20)
     r = malloc (30);
   else
     r = calloc (2, 14);
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (x < 20
+      ? __builtin_object_size (r, 1) != 30
+      : __builtin_object_size (r, 1) != 2 * 14)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != 30)
     abort ();
+#endif
   if (x < 30)
     r = malloc (sizeof (a));
   else
     r = &a.a[3];
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res = x < 30 ? sizeof (a) : sizeof (a.a) - 3;
+  if (__builtin_object_size (r, 1) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (a))
     abort ();
+#endif
   r = memcpy (r, "a", 2);
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (r, 1) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (a))
     abort ();
+#endif
   r = memcpy (r + 2, "b", 2) + 2;
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res -= 4;
+  if (__builtin_object_size (r, 1) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (a) - 4)
     abort ();
+#endif
   r = &a.a[4];
   r = memset (r, 'a', 2);
   if (__builtin_object_size (r, 1) != sizeof (a.a) - 4)
@@ -123,6 +171,20 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (&extc[5].c[3], 1) != (size_t) -1)
     abort ();
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (var, 1) != x + 10)
+    abort ();
+  if (__builtin_object_size (var + 10, 1) != x)
+    abort ();
+  if (__builtin_object_size (&var[5], 1) != x + 5)
+    abort ();
+  if (__builtin_object_size (vara, 1) != (x + 10) * sizeof (struct A))
+    abort ();
+  if (__builtin_object_size (vara + 10, 1) != x * sizeof (struct A))
+    abort ();    
+  if (__builtin_object_size (&vara[5], 1) != (x + 5) * sizeof (struct A))
+    abort ();
+#else
   if (__builtin_object_size (var, 1) != (size_t) -1)
     abort ();
   if (__builtin_object_size (var + 10, 1) != (size_t) -1)
@@ -135,6 +197,7 @@ test1 (void *q, int x)
     abort ();    
   if (__builtin_object_size (&vara[5], 1) != (size_t) -1)
     abort ();
+#endif
   if (__builtin_object_size (&vara[0].a, 1) != sizeof (vara[0].a))
     abort ();
   if (__builtin_object_size (&vara[10].a[0], 1) != sizeof (vara[0].a))
@@ -185,6 +248,9 @@ test2 (void)
   struct B { char buf1[10]; char buf2[10]; } a;
   char *r, buf3[20];
   int i;
+#ifdef DYNAMIC_OBJECT_SIZE
+  size_t dyn_res;
+#endif
 
   if (sizeof (a) != 20)
     return;
@@ -201,8 +267,26 @@ test2 (void)
       else if (i == l1 + 2)
 	r = &a.buf1[9];
     }
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res = sizeof (buf3);
+
+  for (i = 0; i < 4; ++i)
+    {
+      if (i == l1 - 1)
+	dyn_res = sizeof (a.buf1) - 1;
+      else if (i == l1)
+	dyn_res = sizeof (a.buf2) - 7;
+      else if (i == l1 + 1)
+	dyn_res = sizeof (buf3) - 5;
+      else if (i == l1 + 2)
+	dyn_res = sizeof (a.buf1) - 9;
+    }
+  if (__builtin_object_size (r, 1) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (buf3))
     abort ();
+#endif
   r = &buf3[20];
   for (i = 0; i < 4; ++i)
     {
@@ -215,13 +299,50 @@ test2 (void)
       else if (i == l1 + 2)
 	r = &a.buf1[9];
     }
+#ifdef DYNAMIC_OBJECT_SIZE
+  dyn_res = sizeof (buf3) - 20;
+
+  for (i = 0; i < 4; ++i)
+    {
+      if (i == l1 - 1)
+	dyn_res = sizeof (a.buf1) - 7;
+      else if (i == l1)
+	dyn_res = sizeof (a.buf2) - 7;
+      else if (i == l1 + 1)
+	dyn_res = sizeof (buf3) - 5;
+      else if (i == l1 + 2)
+	dyn_res = sizeof (a.buf1) - 9;
+    }
+  if (__builtin_object_size (r, 1) != dyn_res)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (buf3) - 5)
     abort ();
+#endif
   r += 8;
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (dyn_res >= 8)
+    {
+      dyn_res -= 8;
+      if (__builtin_object_size (r, 1) != dyn_res)
+	abort ();
+
+      if (dyn_res >= 6)
+	{
+	  if (__builtin_object_size (r + 6, 1) != dyn_res - 6)
+	    abort ();
+	}
+      else if (__builtin_object_size (r + 6, 1) != 0)
+	abort ();
+    }
+  else if (__builtin_object_size (r, 1) != 0)
+    abort ();
+#else
   if (__builtin_object_size (r, 1) != sizeof (buf3) - 13)
     abort ();
   if (__builtin_object_size (r + 6, 1) != sizeof (buf3) - 19)
     abort ();
+#endif
 }
 
 void
@@ -339,8 +460,13 @@ test5 (size_t x)
 
   for (i = 0; i < x; ++i)
     p = p + 4;
+#ifdef DYNAMIC_OBJECT_SIZE
+  if (__builtin_object_size (p, 1) != sizeof (t.buf) - 8 - 4 * x)
+    abort ();
+#else
   if (__builtin_object_size (p, 1) != sizeof (t.buf) - 8)
     abort ();
+#endif
   memset (p, ' ', sizeof (t.buf) - 8 - 4 * 4);
 }
 

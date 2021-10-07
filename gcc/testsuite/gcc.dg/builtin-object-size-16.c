@@ -54,7 +54,9 @@ static int nfails;
 typedef __SIZE_TYPE__ size_t;
 
 extern char ax[];
+#ifndef DYNAMIC_OBJECT_SIZE
 char ax2[];               /* { dg-warning "assumed to have one element" } */
+#endif
 
 extern char a0[0];
 static char a1[1];
@@ -114,11 +116,19 @@ test_arrays ()
   T (     4,       2,       4,       2,   &a2x2[0][0]);
   T (     0,  F1  (0),      0,       0,   &a2x2 + 1);
   T (     2,  F1 ( 2),      2,  F3 ( 2),  &a2x2[0] + 1);
+#ifdef DYNAMIC_OBJECT_SIZE
+  T (     3,  F1 ( 1),      3,  F3 ( 1),  &a2x2[0][0] + 1);
+#else
   T (     3,  F1 ( 1),      3,  F3 ( 3),  &a2x2[0][0] + 1);
+#endif
 
   T (    15,      15,      15,      15,   a3x5);
   T (    15,       5,      15,       5,   &a3x5[0][0] + 0);
+#ifdef DYNAMIC_OBJECT_SIZE
+  T (    14,  F1 ( 4),     14,  F3 ( 4),  &a3x5[0][0] + 1);
+#else
   T (    14,  F1 ( 4),     14,  F3 (14),  &a3x5[0][0] + 1);
+#endif
 
   T (     1,       1,       1,       1,   a1 + 0);
   T (     0,  F1  (0),      0,       0,   a1 + 1);
