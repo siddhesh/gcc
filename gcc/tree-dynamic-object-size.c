@@ -93,6 +93,212 @@ static vec<tree *>object_size_exprs[4];
 /* Bitmaps what object sizes have been computed already.  */
 static bitmap computed[4];
 
+bool compute_builtin_dyn_object_size (tree, int, tree *,
+				      struct function *fun = NULL);
+
+/* Compute offset of EXPR within VAR.  Return error_mark_node if unknown.  */
+
+static tree
+compute_object_offset (const_tree expr, const_tree var)
+{
+  enum tree_code code = PLUS_EXPR;
+  tree base, off, t;
+
+  if (expr == var)
+    return size_zero_node;
+
+  switch (TREE_CODE (expr))
+    {
+    case COMPONENT_REF:
+      base = compute_object_offset (TREE_OPERAND (expr, 0), var);
+      if (base == error_mark_node)
+	return base;
+
+      t = TREE_OPERAND (expr, 1);
+      off = fold_build2 (PLUS_EXPR, sizetype, DECL_FIELD_OFFSET (t),
+			 size_int (tree_to_uhwi (DECL_FIELD_BIT_OFFSET (t))
+				   / BITS_PER_UNIT));
+      break;
+
+    case REALPART_EXPR:
+    CASE_CONVERT:
+    case VIEW_CONVERT_EXPR:
+    case NON_LVALUE_EXPR:
+      return compute_object_offset (TREE_OPERAND (expr, 0), var);
+
+    case IMAGPART_EXPR:
+      base = compute_object_offset (TREE_OPERAND (expr, 0), var);
+      if (base == error_mark_node)
+	return base;
+
+      off = TYPE_SIZE_UNIT (TREE_TYPE (expr));
+      break;
+
+    case ARRAY_REF:
+      base = compute_object_offset (TREE_OPERAND (expr, 0), var);
+      if (base == error_mark_node)
+	return base;
+
+      t = TREE_OPERAND (expr, 1);
+      tree low_bound, unit_size;
+      low_bound = array_ref_low_bound (CONST_CAST_TREE (expr));
+      unit_size = array_ref_element_size (CONST_CAST_TREE (expr));
+      if (! integer_zerop (low_bound))
+	t = fold_build2 (MINUS_EXPR, TREE_TYPE (t), t, low_bound);
+      if (TREE_CODE (t) == INTEGER_CST && tree_int_cst_sgn (t) < 0)
+	{
+	  code = MINUS_EXPR;
+	  t = fold_build1 (NEGATE_EXPR, TREE_TYPE (t), t);
+	}
+      t = fold_convert (sizetype, t);
+      off = fold_build2 (MULT_EXPR, sizetype, unit_size, t);
+      break;
+
+    case MEM_REF:
+      gcc_assert (TREE_CODE (TREE_OPERAND (expr, 0)) == ADDR_EXPR);
+      return wide_int_to_tree (sizetype, mem_ref_offset (expr));
+
+    default:
+      return error_mark_node;
+    }
+
+  return fold_build2 (code, sizetype, base, off);
+}
+
+/* Given an object size SZ and offset OFF into it, compute the usable object
+   size.  The expression returns 0 for all offsets that invoke undefined
+   behaviour.  */
+
+static tree
+size_for_offset (tree sz, tree off)
+{
+  /* A MEM_REF offset may be a pointer, where we need to figure out the
+     multiplier based on the base type.  */
+  if (POINTER_TYPE_P (TREE_TYPE (off)))
+    {
+      tree typesize = TYPE_SIZE_UNIT (TREE_TYPE (TREE_TYPE (off)));
+
+      if (typesize)
+	{
+	  /*  SZ < TYPESIZE ? SZ : TYPESIZE * MIN (SZ / TYPESIZE, OFF)  */
+	  tree cond = fold_build2 (LT_EXPR, sizetype, sz, typesize);
+
+	  tree tmp = fold_build2 (EXACT_DIV_EXPR, sizetype, sz, typesize);
+	  tmp = fold_build2 (MIN_EXPR, sizetype, tmp, off);
+	  tmp = fold_build2 (MULT_EXPR, sizetype, tmp, typesize);
+
+	  off = fold_build3 (COND_EXPR, sizetype, cond, sz, tmp);
+
+	  return fold_build2 (MINUS_EXPR, sizetype, sz, off);
+	}
+      else
+	off = fold_convert (sizetype, off);
+    }
+
+  off = fold_build2 (MIN_EXPR, sizetype, sz, off);
+  return fold_build2 (MINUS_EXPR, sizetype, sz, off);
+}
+
+/* Peek through ADDR_EXPR operands to get the definition of the whole variable
+   PTR points in.  Write the result expression into PT_VARP and its size into
+   PT_VAR_SIZEP.  Return true if the object is found.  */
+
+static tree
+get_whole_var (const_tree ptr)
+{
+  tree pt_var;
+
+  pt_var = TREE_OPERAND (ptr, 0);
+  while (handled_component_p (pt_var))
+    pt_var = TREE_OPERAND (pt_var, 0);
+
+  return pt_var;
+}
+
+static bool
+whole_var_size (struct object_size_info *osi, tree pt_var,
+		int object_size_type, tree *pt_var_sizep)
+{
+  tree pt_var_size = NULL_TREE;
+  int subobject = object_size_type & 1;
+  int min = object_size_type & 2;
+
+  if (TREE_CODE (pt_var) == MEM_REF)
+    {
+      tree var = TREE_OPERAND (pt_var, 0);
+      if (!osi || subobject || TREE_CODE (var) != SSA_NAME)
+	compute_builtin_dyn_object_size (var, min, &pt_var_size);
+      else
+	{
+	  collect_object_sizes_for (osi, var);
+	  pt_var_size = object_sizes[object_size_type][SSA_NAME_VERSION (var)];
+	}
+
+      if (pt_var_size != NULL_TREE)
+	{
+	  tree offset = wide_int_to_tree (size_type_node,
+					  mem_ref_offset (pt_var));
+
+	  pt_var_size = size_for_offset (pt_var_size, offset);
+	}
+    }
+  else if (DECL_P (pt_var))
+    {
+      pt_var_size = decl_init_size (pt_var, min);
+      if (!pt_var_size)
+	return false;
+    }
+  else if (TREE_CODE (pt_var) == STRING_CST)
+    pt_var_size = TYPE_SIZE_UNIT (TREE_TYPE (pt_var));
+  else
+    return false;
+
+  *pt_var_sizep = pt_var_size;
+  return true;
+}
+
+/* Compute an object size estimate for PTR, which is a ADDR_EXPR.
+   OBJECT_SIZE_TYPE is the second argument from __builtin_dynamic_object_size.
+   If unknown, return false, setting PSIZE to NULL_TREE.  */
+
+static bool
+addr_dyn_object_size (struct object_size_info *osi, const_tree ptr,
+		      int object_size_type, tree *psize)
+{
+  tree pt_var, pt_var_size = NULL_TREE, bytes;
+
+  gcc_assert (TREE_CODE (ptr) == ADDR_EXPR);
+
+  /* Set to unknown and overwrite just before returning if the size
+     could be determined.  */
+  *psize = NULL_TREE;
+
+  pt_var = get_whole_var (ptr);
+
+  if (!pt_var)
+    return false;
+
+  if (!whole_var_size (osi, pt_var, object_size_type, &pt_var_size))
+    return false;
+
+  if (!pt_var_size)
+    return false;
+
+  /* PTR points to a subobject of whole variable PT_VAR.  */
+  if (pt_var != TREE_OPERAND (ptr, 0))
+    {
+      bytes = compute_object_offset (TREE_OPERAND (ptr, 0), pt_var);
+      if (bytes != error_mark_node)
+	bytes = size_for_offset (pt_var_size, bytes);
+    }
+  else
+    bytes = pt_var_size;
+
+  *psize = bytes == error_mark_node ? NULL_TREE : bytes;
+  return true;
+}
+
+
 /* Compute __builtin_dynamic_object_size for CALL, which is a GIMPLE_CALL.
    Handles calls to functions declared with attribute alloc_size.
    OBJECT_SIZE_TYPE is the second argument from __builtin_dynamic_object_size.
@@ -299,6 +505,13 @@ compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize,
      could be determined.  */
   *psize = NULL_TREE;
 
+  if (TREE_CODE (ptr) == ADDR_EXPR)
+    /* We assume that the caller will gimplify the expression.  If the
+       expression depends on any SSA objects, its size expression is gimplified
+       and returned, so the expression will definitely not depend on the cached
+       objects.  */
+    return addr_dyn_object_size (NULL, ptr, object_size_type, psize);
+
   if (TREE_CODE (ptr) != SSA_NAME
       || !POINTER_TYPE_P (TREE_TYPE (ptr)))
       return false;
@@ -357,6 +570,27 @@ compute_builtin_dyn_object_size (tree ptr, int object_size_type, tree *psize,
 out:
   *psize = object_sizes[object_size_type][SSA_NAME_VERSION (ptr)];
   return *psize != NULL_TREE;
+}
+
+/* Compute object_sizes an object defined to VALUE, which is not an
+   SSA_NAME.  */
+
+static void
+expr_object_size (struct object_size_info *osi, tree value, tree *sz)
+{
+  int object_size_type = osi->object_size_type;
+  tree bytes = NULL_TREE;
+
+  if (TREE_CODE (value) == WITH_SIZE_EXPR)
+    value = TREE_OPERAND (value, 0);
+
+  if (TREE_CODE (value) == ADDR_EXPR)
+    addr_dyn_object_size (osi, value, object_size_type, &bytes);
+
+  if (bytes)
+    STRIP_NOPS (bytes);
+
+  *sz = bytes;
 }
 
 static void
@@ -506,6 +740,12 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	  {
 	    if (TREE_CODE (arg) == SSA_NAME)
 	      set_object_size_ssa (osi, var, arg);
+	    else
+	      {
+		tree ret;
+		expr_object_size (osi, arg, &ret);
+		cache_object_size_copy (osi, varno, ret);
+	      }
 	  }
 	else
 	  call_object_size (osi, var, call_stmt);
@@ -517,17 +757,20 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	unsigned i, num_args = gimple_phi_num_args (stmt);
 	tree *sizes = new tree[num_args] ();
 
-	/* Bail out if any of the PHI arguments are non-SSA expressions or
-	   if size of an argument cannot be determined.  */
+	/* Bail out if the size of any of the PHI arguments cannot be
+	   determined.  */
 	for (i = 0; i < gimple_phi_num_args (stmt); i++)
 	  {
 	    tree rhs = gimple_phi_arg_def (stmt, i);
+	    tree sz;
 
 	    if (TREE_CODE (rhs) != SSA_NAME)
-	      break;
-
-	    collect_object_sizes_for (osi, rhs);
-	    tree sz = object_sizes[object_size_type][SSA_NAME_VERSION (rhs)];
+	      expr_object_size (osi, rhs, &sz);
+	    else
+	      {
+		collect_object_sizes_for (osi, rhs);
+		sz = object_sizes[object_size_type][SSA_NAME_VERSION (rhs)];
+	      }
 
 	    if (sz == NULL_TREE)
 	      break;

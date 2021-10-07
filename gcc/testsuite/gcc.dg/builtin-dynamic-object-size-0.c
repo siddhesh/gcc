@@ -105,6 +105,25 @@ test_builtin_malloc_condphi3 (int cond, size_t in, size_t in2)
   return __builtin_dynamic_object_size (ret, 0);
 }
 
+size_t
+__attribute__ ((noinline))
+test_builtin_malloc_condphi4 (size_t sz, int cond)
+{
+  char *a = __builtin_malloc (sz);
+  char b[sz / 2];
+
+  return __builtin_dynamic_object_size (cond ? b : (void *) &a, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_builtin_malloc_condphi5 (size_t sz, int cond, char *c)
+{
+  char *a = __builtin_malloc (sz);
+
+  return __builtin_dynamic_object_size (cond ? c : (void *) &a, 0);
+}
+
 /* Calloc-like allocator.  */
 
 size_t
@@ -154,6 +173,16 @@ test_passthrough (size_t sz, char *in)
 {
   char *bin = __builtin_malloc (sz);
   char *dest = __builtin_memcpy (bin, in, sz);
+
+  return __builtin_dynamic_object_size (dest, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_passthrough_nonssa (char *in)
+{
+  char bin[__builtin_strlen (in) + 1];
+  char *dest = __builtin_memcpy (bin, in, __builtin_strlen (in) + 1);
 
   return __builtin_dynamic_object_size (dest, 0);
 }
@@ -223,6 +252,12 @@ main (int argc, char **argv)
     FAIL ();
   if (test_builtin_malloc_condphi3 (0, 128, 256) != 256)
     FAIL ();
+  if (test_builtin_malloc_condphi4 (128, 1) != 64)
+    FAIL ();
+  if (test_builtin_malloc_condphi4 (128, 0) != sizeof (void *))
+    FAIL ();
+  if (test_builtin_malloc_condphi5 (128, 0, argv[0]) != -1)
+    FAIL ();
   if (test_calloc (2048, 4) != 2048 * 4)
     FAIL ();
   if (test_builtin_calloc (2048, 8) != 2048 * 8)
@@ -240,6 +275,8 @@ main (int argc, char **argv)
   if (test_passthrough (__builtin_strlen (argv[0]) + 1, argv[0])
       != __builtin_strlen (argv[0]) + 1)
     FAIL ();
+  if (test_passthrough_nonssa (argv[0]) != __builtin_strlen (argv[0]) + 1)
+     FAIL ();
   if (test_dynarray (__builtin_strlen (argv[0])) != __builtin_strlen (argv[0]))
     FAIL ();
   if (test_dynarray_cond (0) != 16)
