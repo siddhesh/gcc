@@ -49,7 +49,9 @@
 typedef __SIZE_TYPE__ size_t;
 
 extern char ax[];
+#ifndef DYNAMIC_OBJECT_SIZE
 char ax2[];               /* { dg-warning "assumed to have one element" } */
+#endif
 
 extern char a0[0];
 static char a1[1];
