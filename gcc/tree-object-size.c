@@ -81,6 +81,58 @@ unknown (int object_size_type)
   return ((unsigned HOST_WIDE_INT) -((object_size_type >> 1) ^ 1));
 }
 
+static inline void
+object_sizes_grow (int object_size_type)
+{
+  if (num_ssa_names > object_sizes[object_size_type].length ())
+    object_sizes[object_size_type].safe_grow (num_ssa_names, true);
+}
+
+static inline void
+object_sizes_release (int object_size_type)
+{
+  object_sizes[object_size_type].release ();
+}
+
+static inline bool
+object_sizes_unknown_p (int object_size_type, unsigned varno)
+{
+  return (object_sizes[object_size_type][varno]
+	  == unknown (object_size_type));
+}
+
+static inline unsigned HOST_WIDE_INT
+object_sizes_get (struct object_size_info *osi, unsigned varno)
+{
+  return object_sizes[osi->object_size_type][varno];
+}
+
+static inline bool
+object_sizes_set_force (struct object_size_info *osi, unsigned varno,
+			unsigned HOST_WIDE_INT val)
+{
+  object_sizes[osi->object_size_type][varno] = val;
+  return true;
+}
+
+static inline bool
+object_sizes_set (struct object_size_info *osi, unsigned varno,
+		  unsigned HOST_WIDE_INT val)
+{
+  int object_size_type = osi->object_size_type;
+  if ((object_size_type & 2) == 0)
+    {
+      if (object_sizes[object_size_type][varno] < val)
+	return object_sizes_set_force (osi, varno, val);
+    }
+  else
+    {
+      if (object_sizes[object_size_type][varno] > val)
+	return object_sizes_set_force (osi, varno, val);
+    }
+  return false;
+}
+
 /* Initialize OFFSET_LIMIT variable.  */
 static void
 init_offset_limit (void)
@@ -240,7 +292,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	    collect_object_sizes_for (osi, var);
 	  if (bitmap_bit_p (computed[object_size_type],
 			    SSA_NAME_VERSION (var)))
-	    sz = object_sizes[object_size_type][SSA_NAME_VERSION (var)];
+	    sz = object_sizes_get (osi, SSA_NAME_VERSION (var));
 	  else
 	    sz = unknown (object_size_type);
 	}
@@ -575,14 +627,14 @@ compute_builtin_object_size (tree ptr, int object_size_type,
       return false;
     }
 
+  struct object_size_info osi;
+  osi.object_size_type = object_size_type;
   if (!bitmap_bit_p (computed[object_size_type], SSA_NAME_VERSION (ptr)))
     {
-      struct object_size_info osi;
       bitmap_iterator bi;
       unsigned int i;
 
-      if (num_ssa_names > object_sizes[object_size_type].length ())
-	object_sizes[object_size_type].safe_grow (num_ssa_names, true);
+      object_sizes_grow (object_size_type);
       if (dump_file)
 	{
 	  fprintf (dump_file, "Computing %s %sobject size for ",
@@ -594,7 +646,6 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 
       osi.visited = BITMAP_ALLOC (NULL);
       osi.reexamine = BITMAP_ALLOC (NULL);
-      osi.object_size_type = object_size_type;
       osi.depths = NULL;
       osi.stack = NULL;
       osi.tos = NULL;
@@ -671,8 +722,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
       if (dump_file)
 	{
 	  EXECUTE_IF_SET_IN_BITMAP (osi.visited, 0, i, bi)
-	    if (object_sizes[object_size_type][i]
-		!= unknown (object_size_type))
+	    if (!object_sizes_unknown_p (object_size_type, i))
 	      {
 		print_generic_expr (dump_file, ssa_name (i),
 				    dump_flags);
@@ -681,7 +731,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 			 HOST_WIDE_INT_PRINT_UNSIGNED "\n",
 			 (object_size_type & 2) ? "minimum" : "maximum",
 			 (object_size_type & 1) ? "sub" : "",
-			 object_sizes[object_size_type][i]);
+			 object_sizes_get (&osi, i));
 	      }
 	}
 
@@ -689,7 +739,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
       BITMAP_FREE (osi.visited);
     }
 
-  *psize = object_sizes[object_size_type][SSA_NAME_VERSION (ptr)];
+  *psize = object_sizes_get (&osi, SSA_NAME_VERSION (ptr));
   return *psize != unknown (object_size_type);
 }
 
@@ -702,8 +752,7 @@ expr_object_size (struct object_size_info *osi, tree ptr, tree value)
   unsigned int varno = SSA_NAME_VERSION (ptr);
   unsigned HOST_WIDE_INT bytes;
 
-  gcc_assert (object_sizes[object_size_type][varno]
-	      != unknown (object_size_type));
+  gcc_assert (!object_sizes_unknown_p (object_size_type, varno));
   gcc_assert (osi->pass == 0);
 
   if (TREE_CODE (value) == WITH_SIZE_EXPR)
@@ -718,16 +767,7 @@ expr_object_size (struct object_size_info *osi, tree ptr, tree value)
   else
     bytes = unknown (object_size_type);
 
-  if ((object_size_type & 2) == 0)
-    {
-      if (object_sizes[object_size_type][varno] < bytes)
-	object_sizes[object_size_type][varno] = bytes;
-    }
-  else
-    {
-      if (object_sizes[object_size_type][varno] > bytes)
-	object_sizes[object_size_type][varno] = bytes;
-    }
+  object_sizes_set (osi, varno, bytes);
 }
 
 
@@ -742,22 +782,12 @@ call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
 
   gcc_assert (is_gimple_call (call));
 
-  gcc_assert (object_sizes[object_size_type][varno]
-	      != unknown (object_size_type));
+  gcc_assert (!object_sizes_unknown_p (object_size_type, varno));
   gcc_assert (osi->pass == 0);
 
   bytes = alloc_object_size (call, object_size_type);
 
-  if ((object_size_type & 2) == 0)
-    {
-      if (object_sizes[object_size_type][varno] < bytes)
-	object_sizes[object_size_type][varno] = bytes;
-    }
-  else
-    {
-      if (object_sizes[object_size_type][varno] > bytes)
-	object_sizes[object_size_type][varno] = bytes;
-    }
+  object_sizes_set (osi, varno, bytes);
 }
 
 
@@ -768,12 +798,11 @@ unknown_object_size (struct object_size_info *osi, tree ptr)
 {
   int object_size_type = osi->object_size_type;
   unsigned int varno = SSA_NAME_VERSION (ptr);
-  unsigned HOST_WIDE_INT bytes = unknown (object_size_type);
 
-  gcc_checking_assert (object_sizes[object_size_type][varno] != bytes);
+  gcc_checking_assert (!object_sizes_unknown_p (object_size_type, varno));
   gcc_checking_assert (osi->pass == 0);
 
-  object_sizes[object_size_type][varno] = bytes;
+  object_sizes_set (osi, varno, unknown (object_size_type));
 }
 
 
@@ -788,38 +817,24 @@ merge_object_sizes (struct object_size_info *osi, tree dest, tree orig,
   unsigned int varno = SSA_NAME_VERSION (dest);
   unsigned HOST_WIDE_INT orig_bytes;
 
-  if (object_sizes[object_size_type][varno] == unknown (object_size_type))
+  if (object_sizes_unknown_p (object_size_type, varno))
     return false;
   if (offset >= offset_limit)
     {
-      object_sizes[object_size_type][varno] = unknown (object_size_type);
+      object_sizes_set (osi, varno, unknown (object_size_type));
       return false;
     }
 
   if (osi->pass == 0)
     collect_object_sizes_for (osi, orig);
 
-  orig_bytes = object_sizes[object_size_type][SSA_NAME_VERSION (orig)];
+  orig_bytes = object_sizes_get (osi, SSA_NAME_VERSION (orig));
   if (orig_bytes != unknown (object_size_type))
     orig_bytes = (offset > orig_bytes)
 		 ? HOST_WIDE_INT_0U : orig_bytes - offset;
 
-  if ((object_size_type & 2) == 0)
-    {
-      if (object_sizes[object_size_type][varno] < orig_bytes)
-	{
-	  object_sizes[object_size_type][varno] = orig_bytes;
-	  osi->changed = true;
-	}
-    }
-  else
-    {
-      if (object_sizes[object_size_type][varno] > orig_bytes)
-	{
-	  object_sizes[object_size_type][varno] = orig_bytes;
-	  osi->changed = true;
-	}
-    }
+  osi->changed = object_sizes_set (osi, varno, orig_bytes);
+
   return bitmap_bit_p (osi->reexamine, SSA_NAME_VERSION (orig));
 }
 
@@ -851,7 +866,7 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
   else
     gcc_unreachable ();
 
-  if (object_sizes[object_size_type][varno] == unknown (object_size_type))
+  if (object_sizes_unknown_p (object_size_type, varno))
     return false;
 
   /* Handle PTR + OFFSET here.  */
@@ -882,16 +897,7 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
   else
     bytes = unknown (object_size_type);
 
-  if ((object_size_type & 2) == 0)
-    {
-      if (object_sizes[object_size_type][varno] < bytes)
-	object_sizes[object_size_type][varno] = bytes;
-    }
-  else
-    {
-      if (object_sizes[object_size_type][varno] > bytes)
-	object_sizes[object_size_type][varno] = bytes;
-    }
+  object_sizes_set (osi, varno, bytes);
   return false;
 }
 
@@ -910,7 +916,7 @@ cond_expr_object_size (struct object_size_info *osi, tree var, gimple *stmt)
 
   gcc_assert (gimple_assign_rhs_code (stmt) == COND_EXPR);
 
-  if (object_sizes[object_size_type][varno] == unknown (object_size_type))
+  if (object_sizes_unknown_p (object_size_type, varno))
     return false;
 
   then_ = gimple_assign_rhs2 (stmt);
@@ -921,7 +927,7 @@ cond_expr_object_size (struct object_size_info *osi, tree var, gimple *stmt)
   else
     expr_object_size (osi, var, then_);
 
-  if (object_sizes[object_size_type][varno] == unknown (object_size_type))
+  if (object_sizes_unknown_p (object_size_type, varno))
     return reexamine;
 
   if (TREE_CODE (else_) == SSA_NAME)
@@ -967,8 +973,9 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
     {
       if (bitmap_set_bit (osi->visited, varno))
 	{
-	  object_sizes[object_size_type][varno]
-	    = (object_size_type & 2) ? -1 : 0;
+	  /* Initialize to 0 for maximum size and M1U for minimum size so that
+	     it gets immediately overridden.  */
+	  object_sizes_set_force (osi, varno, unknown (object_size_type ^ 2));
 	}
       else
 	{
@@ -1039,7 +1046,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 
     case GIMPLE_ASM:
       /* Pointers defined by __asm__ statements can point anywhere.  */
-      object_sizes[object_size_type][varno] = unknown (object_size_type);
+      object_sizes_set (osi, varno, unknown (object_size_type));
       break;
 
     case GIMPLE_NOP:
@@ -1048,7 +1055,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	expr_object_size (osi, var, SSA_NAME_VAR (var));
       else
 	/* Uninitialized SSA names point nowhere.  */
-	object_sizes[object_size_type][varno] = unknown (object_size_type);
+	object_sizes_set (osi, varno, unknown (object_size_type));
       break;
 
     case GIMPLE_PHI:
@@ -1059,8 +1066,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	  {
 	    tree rhs = gimple_phi_arg (stmt, i)->def;
 
-	    if (object_sizes[object_size_type][varno]
-		== unknown (object_size_type))
+	    if (object_sizes_unknown_p (object_size_type, varno))
 	      break;
 
 	    if (TREE_CODE (rhs) == SSA_NAME)
@@ -1075,8 +1081,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
       gcc_unreachable ();
     }
 
-  if (! reexamine
-      || object_sizes[object_size_type][varno] == unknown (object_size_type))
+  if (! reexamine || object_sizes_unknown_p (object_size_type, varno))
     {
       bitmap_set_bit (computed[object_size_type], varno);
       bitmap_clear_bit (osi->reexamine, varno);
@@ -1116,7 +1121,7 @@ check_for_plus_in_loops_1 (struct object_size_info *osi, tree var,
 	      --sp;
 	      bitmap_clear_bit (osi->reexamine, *sp);
 	      bitmap_set_bit (computed[osi->object_size_type], *sp);
-	      object_sizes[osi->object_size_type][*sp] = 0;
+	      object_sizes_set_force (osi, *sp, 0);
 	      if (*sp == varno)
 		break;
 	    }
@@ -1240,7 +1245,7 @@ init_object_sizes (void)
 
   for (object_size_type = 0; object_size_type <= 3; object_size_type++)
     {
-      object_sizes[object_size_type].safe_grow (num_ssa_names, true);
+      object_sizes_grow (object_size_type);
       computed[object_size_type] = BITMAP_ALLOC (NULL);
     }
 
@@ -1257,7 +1262,7 @@ fini_object_sizes (void)
 
   for (object_size_type = 0; object_size_type <= 3; object_size_type++)
     {
-      object_sizes[object_size_type].release ();
+      object_sizes_release (object_size_type);
       BITMAP_FREE (computed[object_size_type]);
     }
 }
