@@ -335,11 +335,27 @@ test5 (size_t x)
 {
   struct T { char buf[64]; char buf2[64]; } t;
   char *p = &t.buf[8];
+  char *r = t.buf2;
   size_t i;
 
   for (i = 0; i < x; ++i)
     p = p + 4;
   if (__builtin_object_size (p, 1) != sizeof (t.buf) - 8)
+    abort ();
+  p = &t.buf[8];
+  for (i = 0; i < x; i++)
+    {
+      r = __builtin_memcpy (r, t.buf, i);
+      p = r + 1;
+    }
+  if (__builtin_object_size (p, 1) != sizeof (t.buf2) - 1)
+    abort ();
+  for (i = 0; i < x; i++)
+    {
+      r = __builtin_mempcpy (r, t.buf, i);
+      p = r + 1;
+    }
+  if (__builtin_object_size (p, 1) != -1)
     abort ();
   memset (p, ' ', sizeof (t.buf) - 8 - 4 * 4);
 }
