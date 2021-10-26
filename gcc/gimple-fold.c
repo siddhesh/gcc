@@ -2485,13 +2485,14 @@ gimple_fold_builtin_strncat (gimple_stmt_iterator *gsi)
   if (cmpsrc < 0)
     return false;
 
-  unsigned HOST_WIDE_INT dstsize;
+  tree dstsize;
 
   bool nowarn = warning_suppressed_p (stmt, OPT_Wstringop_overflow_);
 
-  if (!nowarn && compute_builtin_object_size (dst, 1, &dstsize))
+  if (!nowarn && compute_builtin_object_size (dst, 1, &dstsize)
+      && tree_fits_uhwi_p (dstsize))
     {
-      int cmpdst = compare_tree_int (len, dstsize);
+      int cmpdst = compare_tree_int (len, tree_to_uhwi (dstsize));
 
       if (cmpdst >= 0)
 	{
@@ -2508,7 +2509,7 @@ gimple_fold_builtin_strncat (gimple_stmt_iterator *gsi)
 				    "destination size")
 			       : G_("%qD specified bound %E exceeds "
 				    "destination size %wu"),
-			       fndecl, len, dstsize);
+			       fndecl, len, tree_to_uhwi (dstsize));
 	  if (nowarn)
 	    suppress_warning (stmt, OPT_Wstringop_overflow_);
 	}

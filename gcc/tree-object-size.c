@@ -47,13 +47,12 @@ struct object_size_info
 
 static tree compute_object_offset (const_tree, const_tree);
 static bool addr_object_size (struct object_size_info *,
-			      const_tree, int, unsigned HOST_WIDE_INT *);
-static unsigned HOST_WIDE_INT alloc_object_size (const gcall *, int);
+			      const_tree, int, tree *);
+static tree alloc_object_size (const gcall *, int);
 static tree pass_through_call (const gcall *);
 static void collect_object_sizes_for (struct object_size_info *, tree);
 static void expr_object_size (struct object_size_info *, tree, tree);
-static bool merge_object_sizes (struct object_size_info *, tree, tree,
-				unsigned HOST_WIDE_INT);
+static bool merge_object_sizes (struct object_size_info *, tree, tree, tree);
 static bool plus_stmt_object_size (struct object_size_info *, tree, gimple *);
 static bool cond_expr_object_size (struct object_size_info *, tree, gimple *);
 static void init_offset_limit (void);
@@ -67,18 +66,31 @@ static void check_for_plus_in_loops_1 (struct object_size_info *, tree,
    the subobject (innermost array or field with address taken).
    object_sizes[2] is lower bound for number of bytes till the end of
    the object and object_sizes[3] lower bound for subobject.  */
-static vec<unsigned HOST_WIDE_INT> object_sizes[4];
+static vec<tree> object_sizes[4];
 
 /* Bitmaps what object sizes have been computed already.  */
 static bitmap computed[4];
 
 /* Maximum value of offset we consider to be addition.  */
-static unsigned HOST_WIDE_INT offset_limit;
+static tree offset_limit;
 
 static inline unsigned HOST_WIDE_INT
 unknown (int object_size_type)
 {
   return ((unsigned HOST_WIDE_INT) -((object_size_type >> 1) ^ 1));
+}
+
+static inline tree
+size_unknown (int object_size_type)
+{
+  return size_int (unknown (object_size_type));
+}
+
+static inline bool
+size_unknown_p (tree val, int object_size_type)
+{
+  return (tree_fits_uhwi_p (val)
+	  && tree_to_uhwi (val) == unknown (object_size_type));
 }
 
 static inline void
@@ -97,53 +109,52 @@ object_sizes_release (int object_size_type)
 static inline bool
 object_sizes_unknown_p (int object_size_type, unsigned varno)
 {
-  return (object_sizes[object_size_type][varno]
-	  == unknown (object_size_type));
+  return (tree_fits_uhwi_p (object_sizes[object_size_type][varno])
+	  && (tree_to_uhwi (object_sizes[object_size_type][varno])
+	      == unknown (object_size_type)));
 }
 
-static inline unsigned HOST_WIDE_INT
+static inline tree
 object_sizes_get (struct object_size_info *osi, unsigned varno)
 {
   return object_sizes[osi->object_size_type][varno];
 }
 
 static inline bool
-object_sizes_set_force (struct object_size_info *osi, unsigned varno,
-			unsigned HOST_WIDE_INT val)
+object_sizes_set_uhwi (struct object_size_info *osi, unsigned varno,
+		      unsigned HOST_WIDE_INT val)
 {
-  object_sizes[osi->object_size_type][varno] = val;
+  object_sizes[osi->object_size_type][varno] = size_int (val);
   return true;
 }
 
 static inline bool
-object_sizes_set (struct object_size_info *osi, unsigned varno,
-		  unsigned HOST_WIDE_INT val)
+object_sizes_set (struct object_size_info *osi, unsigned varno, tree val)
 {
   int object_size_type = osi->object_size_type;
-  if ((object_size_type & 2) == 0)
-    {
-      if (object_sizes[object_size_type][varno] < val)
-	return object_sizes_set_force (osi, varno, val);
-    }
-  else
-    {
-      if (object_sizes[object_size_type][varno] > val)
-	return object_sizes_set_force (osi, varno, val);
-    }
-  return false;
+  tree oldval = object_sizes[object_size_type][varno];
+
+  enum tree_code code = object_size_type & 2 ? MIN_EXPR : MAX_EXPR;
+
+  object_sizes[object_size_type][varno] = size_binop (code, val, oldval);
+  return tree_int_cst_compare (val, oldval) != 0;
 }
 
 /* Initialize OFFSET_LIMIT variable.  */
 static void
 init_offset_limit (void)
 {
-  if (tree_fits_uhwi_p (TYPE_MAX_VALUE (sizetype)))
-    offset_limit = tree_to_uhwi (TYPE_MAX_VALUE (sizetype));
-  else
-    offset_limit = -1;
-  offset_limit /= 2;
+  offset_limit = size_binop (RSHIFT_EXPR, TYPE_MAX_VALUE (sizetype),
+			     size_int (1));
 }
 
+/* Bytes at end of the object with SZ from offset OFFSET. */
+
+static tree
+size_for_offset (tree sz, tree offset)
+{
+  return size_binop (MINUS_EXPR, size_binop (MAX_EXPR, sz, offset), offset);
+}
 
 /* Compute offset of EXPR within VAR.  Return error_mark_node
    if unknown.  */
@@ -254,11 +265,11 @@ decl_init_size (tree decl, bool min)
 
 /* Compute __builtin_object_size for PTR, which is a ADDR_EXPR.
    OBJECT_SIZE_TYPE is the second argument from __builtin_object_size.
-   If unknown, return unknown (object_size_type).  */
+   If unknown, return size_unknown (object_size_type).  */
 
 static bool
 addr_object_size (struct object_size_info *osi, const_tree ptr,
-		  int object_size_type, unsigned HOST_WIDE_INT *psize)
+		  int object_size_type, tree *psize)
 {
   tree pt_var, pt_var_size = NULL_TREE, var_size, bytes;
 
@@ -266,7 +277,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 
   /* Set to unknown and overwrite just before returning if the size
      could be determined.  */
-  *psize = unknown (object_size_type);
+  *psize = size_unknown (object_size_type);
 
   pt_var = TREE_OPERAND (ptr, 0);
   while (handled_component_p (pt_var))
@@ -277,7 +288,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 
   if (TREE_CODE (pt_var) == MEM_REF)
     {
-      unsigned HOST_WIDE_INT sz;
+      tree sz;
 
       if (!osi || (object_size_type & 1) != 0
 	  || TREE_CODE (TREE_OPERAND (pt_var, 0)) != SSA_NAME)
@@ -294,27 +305,22 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 			    SSA_NAME_VERSION (var)))
 	    sz = object_sizes_get (osi, SSA_NAME_VERSION (var));
 	  else
-	    sz = unknown (object_size_type);
+	    sz = size_unknown (object_size_type);
 	}
-      if (sz != unknown (object_size_type))
+      if (!size_unknown_p (sz, object_size_type))
 	{
-	  offset_int mem_offset;
-	  if (mem_ref_offset (pt_var).is_constant (&mem_offset))
-	    {
-	      offset_int dsz = wi::sub (sz, mem_offset);
-	      if (wi::neg_p (dsz))
-		sz = 0;
-	      else if (wi::fits_uhwi_p (dsz))
-		sz = dsz.to_uhwi ();
-	      else
-		sz = unknown (object_size_type);
-	    }
+	  tree offset = TREE_OPERAND (pt_var, 1);
+	  if (TREE_CODE (offset) != INTEGER_CST
+	      || TREE_CODE (sz) != INTEGER_CST)
+	    sz = size_unknown (object_size_type);
 	  else
-	    sz = unknown (object_size_type);
+	    sz = size_for_offset (sz, offset);
 	}
 
-      if (sz != unknown (object_size_type) && sz < offset_limit)
-	pt_var_size = size_int (sz);
+      if (!size_unknown_p (sz, object_size_type)
+	  && TREE_CODE (sz) == INTEGER_CST
+	  && tree_int_cst_lt (sz, offset_limit))
+	pt_var_size = sz;
     }
   else if (DECL_P (pt_var))
     {
@@ -330,8 +336,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
   if (pt_var_size)
     {
       /* Validate the size determined above.  */
-      if (!tree_fits_uhwi_p (pt_var_size)
-	  || tree_to_uhwi (pt_var_size) >= offset_limit)
+      if (tree_int_cst_le (offset_limit, pt_var_size))
 	return false;
     }
 
@@ -482,22 +487,17 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
   else
     bytes = pt_var_size;
 
-  if (tree_fits_uhwi_p (bytes))
-    {
-      *psize = tree_to_uhwi (bytes);
-      return true;
-    }
-
-  return false;
+  *psize = bytes;
+  return true;
 }
 
 
 /* Compute __builtin_object_size for CALL, which is a GIMPLE_CALL.
    Handles calls to functions declared with attribute alloc_size.
    OBJECT_SIZE_TYPE is the second argument from __builtin_object_size.
-   If unknown, return unknown (object_size_type).  */
+   If unknown, return size_unknown (object_size_type).  */
 
-static unsigned HOST_WIDE_INT
+static tree
 alloc_object_size (const gcall *call, int object_size_type)
 {
   gcc_assert (is_gimple_call (call));
@@ -509,7 +509,7 @@ alloc_object_size (const gcall *call, int object_size_type)
     calltype = gimple_call_fntype (call);
 
   if (!calltype)
-    return unknown (object_size_type);
+    return size_unknown (object_size_type);
 
   /* Set to positions of alloc_size arguments.  */
   int arg1 = -1, arg2 = -1;
@@ -529,7 +529,7 @@ alloc_object_size (const gcall *call, int object_size_type)
       || (arg2 >= 0
 	  && (arg2 >= (int)gimple_call_num_args (call)
 	      || TREE_CODE (gimple_call_arg (call, arg2)) != INTEGER_CST)))
-    return unknown (object_size_type);
+    return size_unknown (object_size_type);
 
   tree bytes = NULL_TREE;
   if (arg2 >= 0)
@@ -539,10 +539,7 @@ alloc_object_size (const gcall *call, int object_size_type)
   else if (arg1 >= 0)
     bytes = fold_convert (sizetype, gimple_call_arg (call, arg1));
 
-  if (bytes && tree_fits_uhwi_p (bytes))
-    return tree_to_uhwi (bytes);
-
-  return unknown (object_size_type);
+  return bytes;
 }
 
 
@@ -578,13 +575,13 @@ pass_through_call (const gcall *call)
 
 bool
 compute_builtin_object_size (tree ptr, int object_size_type,
-			     unsigned HOST_WIDE_INT *psize)
+			     tree *psize)
 {
   gcc_assert (object_size_type >= 0 && object_size_type <= 3);
 
   /* Set to unknown and overwrite just before returning if the size
      could be determined.  */
-  *psize = unknown (object_size_type);
+  *psize = size_unknown (object_size_type);
 
   if (! offset_limit)
     init_offset_limit ();
@@ -618,8 +615,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 						  psize))
 		{
 		  /* Return zero when the offset is out of bounds.  */
-		  unsigned HOST_WIDE_INT off = tree_to_shwi (offset);
-		  *psize = off < *psize ? *psize - off : 0;
+		  *psize = size_for_offset (*psize, offset);
 		  return true;
 		}
 	    }
@@ -727,11 +723,12 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 		print_generic_expr (dump_file, ssa_name (i),
 				    dump_flags);
 		fprintf (dump_file,
-			 ": %s %sobject size "
-			 HOST_WIDE_INT_PRINT_UNSIGNED "\n",
+			 ": %s %sobject size ",
 			 (object_size_type & 2) ? "minimum" : "maximum",
-			 (object_size_type & 1) ? "sub" : "",
-			 object_sizes_get (&osi, i));
+			 (object_size_type & 1) ? "sub" : "");
+		print_generic_expr (dump_file, object_sizes_get (&osi, i),
+				    dump_flags);
+		fprintf (dump_file, "\n");
 	      }
 	}
 
@@ -740,7 +737,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
     }
 
   *psize = object_sizes_get (&osi, SSA_NAME_VERSION (ptr));
-  return *psize != unknown (object_size_type);
+  return !size_unknown_p (*psize, object_size_type);
 }
 
 /* Compute object_sizes for PTR, defined to VALUE, which is not an SSA_NAME.  */
@@ -750,7 +747,7 @@ expr_object_size (struct object_size_info *osi, tree ptr, tree value)
 {
   int object_size_type = osi->object_size_type;
   unsigned int varno = SSA_NAME_VERSION (ptr);
-  unsigned HOST_WIDE_INT bytes;
+  tree bytes;
 
   gcc_assert (!object_sizes_unknown_p (object_size_type, varno));
   gcc_assert (osi->pass == 0);
@@ -765,7 +762,7 @@ expr_object_size (struct object_size_info *osi, tree ptr, tree value)
   if (TREE_CODE (value) == ADDR_EXPR)
     addr_object_size (osi, value, object_size_type, &bytes);
   else
-    bytes = unknown (object_size_type);
+    bytes = size_unknown (object_size_type);
 
   object_sizes_set (osi, varno, bytes);
 }
@@ -778,16 +775,13 @@ call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
 {
   int object_size_type = osi->object_size_type;
   unsigned int varno = SSA_NAME_VERSION (ptr);
-  unsigned HOST_WIDE_INT bytes;
 
   gcc_assert (is_gimple_call (call));
 
   gcc_assert (!object_sizes_unknown_p (object_size_type, varno));
   gcc_assert (osi->pass == 0);
 
-  bytes = alloc_object_size (call, object_size_type);
-
-  object_sizes_set (osi, varno, bytes);
+  object_sizes_set (osi, varno, alloc_object_size (call, object_size_type));
 }
 
 
@@ -802,7 +796,7 @@ unknown_object_size (struct object_size_info *osi, tree ptr)
   gcc_checking_assert (!object_sizes_unknown_p (object_size_type, varno));
   gcc_checking_assert (osi->pass == 0);
 
-  object_sizes_set (osi, varno, unknown (object_size_type));
+  object_sizes_set (osi, varno, size_unknown (object_size_type));
 }
 
 
@@ -811,17 +805,17 @@ unknown_object_size (struct object_size_info *osi, tree ptr)
 
 static bool
 merge_object_sizes (struct object_size_info *osi, tree dest, tree orig,
-		    unsigned HOST_WIDE_INT offset)
+		    tree offset)
 {
   int object_size_type = osi->object_size_type;
   unsigned int varno = SSA_NAME_VERSION (dest);
-  unsigned HOST_WIDE_INT orig_bytes;
+  tree orig_bytes;
 
   if (object_sizes_unknown_p (object_size_type, varno))
     return false;
-  if (offset >= offset_limit)
+  if (tree_int_cst_le (offset_limit, offset))
     {
-      object_sizes_set (osi, varno, unknown (object_size_type));
+      object_sizes_set (osi, varno, size_unknown (object_size_type));
       return false;
     }
 
@@ -829,9 +823,8 @@ merge_object_sizes (struct object_size_info *osi, tree dest, tree orig,
     collect_object_sizes_for (osi, orig);
 
   orig_bytes = object_sizes_get (osi, SSA_NAME_VERSION (orig));
-  if (orig_bytes != unknown (object_size_type))
-    orig_bytes = (offset > orig_bytes)
-		 ? HOST_WIDE_INT_0U : orig_bytes - offset;
+  if (!size_unknown_p (orig_bytes, object_size_type))
+    orig_bytes = size_for_offset (orig_bytes, offset);
 
   osi->changed = object_sizes_set (osi, varno, orig_bytes);
 
@@ -848,7 +841,7 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
 {
   int object_size_type = osi->object_size_type;
   unsigned int varno = SSA_NAME_VERSION (var);
-  unsigned HOST_WIDE_INT bytes;
+  tree bytes;
   tree op0, op1;
 
   if (gimple_assign_rhs_code (stmt) == POINTER_PLUS_EXPR)
@@ -874,28 +867,22 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
       && (TREE_CODE (op0) == SSA_NAME
 	  || TREE_CODE (op0) == ADDR_EXPR))
     {
-      if (! tree_fits_uhwi_p (op1))
-	bytes = unknown (object_size_type);
-      else if (TREE_CODE (op0) == SSA_NAME)
-	return merge_object_sizes (osi, var, op0, tree_to_uhwi (op1));
+      if (TREE_CODE (op0) == SSA_NAME)
+	return merge_object_sizes (osi, var, op0, op1);
       else
 	{
-	  unsigned HOST_WIDE_INT off = tree_to_uhwi (op1);
-
           /* op0 will be ADDR_EXPR here.  */
 	  addr_object_size (osi, op0, object_size_type, &bytes);
-	  if (bytes == unknown (object_size_type))
+	  if (size_unknown_p (bytes, object_size_type))
 	    ;
-	  else if (off > offset_limit)
-	    bytes = unknown (object_size_type);
-	  else if (off > bytes)
-	    bytes = 0;
+	  else if (tree_int_cst_lt (offset_limit, op1))
+	    bytes = size_unknown (object_size_type);
 	  else
-	    bytes -= off;
+	    bytes = size_for_offset (bytes, op1);
 	}
     }
   else
-    bytes = unknown (object_size_type);
+    bytes = size_unknown (object_size_type);
 
   object_sizes_set (osi, varno, bytes);
   return false;
@@ -923,7 +910,7 @@ cond_expr_object_size (struct object_size_info *osi, tree var, gimple *stmt)
   else_ = gimple_assign_rhs3 (stmt);
 
   if (TREE_CODE (then_) == SSA_NAME)
-    reexamine |= merge_object_sizes (osi, var, then_, 0);
+    reexamine |= merge_object_sizes (osi, var, then_, size_int (0));
   else
     expr_object_size (osi, var, then_);
 
@@ -931,7 +918,7 @@ cond_expr_object_size (struct object_size_info *osi, tree var, gimple *stmt)
     return reexamine;
 
   if (TREE_CODE (else_) == SSA_NAME)
-    reexamine |= merge_object_sizes (osi, var, else_, 0);
+    reexamine |= merge_object_sizes (osi, var, else_, size_int (0));
   else
     expr_object_size (osi, var, else_);
 
@@ -948,11 +935,11 @@ cond_expr_object_size (struct object_size_info *osi, tree var, gimple *stmt)
    object size is object size of the first operand minus the constant.
    If the constant is bigger than the number of remaining bytes until the
    end of the object, object size is 0, but if it is instead a pointer
-   subtraction, object size is unknown (object_size_type).
+   subtraction, object size is size_unknown (object_size_type).
    To differentiate addition from subtraction, ADDR_EXPR returns
-   unknown (object_size_type) for all objects bigger than half of the address
-   space, and constants less than half of the address space are considered
-   addition, while bigger constants subtraction.
+   size_unknown (object_size_type) for all objects bigger than half of the
+   address space, and constants less than half of the address space are
+   considered addition, while bigger constants subtraction.
    For a memcpy like GIMPLE_CALL that always returns one of its arguments, the
    object size is object size of that argument.
    Otherwise, object size is the maximum of object sizes of variables
@@ -975,7 +962,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	{
 	  /* Initialize to 0 for maximum size and M1U for minimum size so that
 	     it gets immediately overridden.  */
-	  object_sizes_set_force (osi, varno, unknown (object_size_type ^ 2));
+	  object_sizes_set_uhwi (osi, varno, unknown (object_size_type ^ 2));
 	}
       else
 	{
@@ -1018,7 +1005,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
           {
             if (TREE_CODE (rhs) == SSA_NAME
                 && POINTER_TYPE_P (TREE_TYPE (rhs)))
-              reexamine = merge_object_sizes (osi, var, rhs, 0);
+	      reexamine = merge_object_sizes (osi, var, rhs, size_int (0));
             else
               expr_object_size (osi, var, rhs);
           }
@@ -1035,7 +1022,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
           {
             if (TREE_CODE (arg) == SSA_NAME
                 && POINTER_TYPE_P (TREE_TYPE (arg)))
-              reexamine = merge_object_sizes (osi, var, arg, 0);
+	      reexamine = merge_object_sizes (osi, var, arg, size_int (0));
             else
               expr_object_size (osi, var, arg);
           }
@@ -1046,7 +1033,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 
     case GIMPLE_ASM:
       /* Pointers defined by __asm__ statements can point anywhere.  */
-      object_sizes_set (osi, varno, unknown (object_size_type));
+      object_sizes_set (osi, varno, size_unknown (object_size_type));
       break;
 
     case GIMPLE_NOP:
@@ -1055,7 +1042,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	expr_object_size (osi, var, SSA_NAME_VAR (var));
       else
 	/* Uninitialized SSA names point nowhere.  */
-	object_sizes_set (osi, varno, unknown (object_size_type));
+	object_sizes_set (osi, varno, size_unknown (object_size_type));
       break;
 
     case GIMPLE_PHI:
@@ -1070,7 +1057,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	      break;
 
 	    if (TREE_CODE (rhs) == SSA_NAME)
-	      reexamine |= merge_object_sizes (osi, var, rhs, 0);
+	      reexamine |= merge_object_sizes (osi, var, rhs, size_int (0));
 	    else if (osi->pass == 0)
 	      expr_object_size (osi, var, rhs);
 	  }
@@ -1121,7 +1108,7 @@ check_for_plus_in_loops_1 (struct object_size_info *osi, tree var,
 	      --sp;
 	      bitmap_clear_bit (osi->reexamine, *sp);
 	      bitmap_set_bit (computed[osi->object_size_type], *sp);
-	      object_sizes_set_force (osi, *sp, 0);
+	      object_sizes_set_uhwi (osi, *sp, 0);
 	      if (*sp == varno)
 		break;
 	    }
@@ -1312,16 +1299,15 @@ object_sizes_execute (function *fun, bool insert_min_max_p)
 			  || TREE_CODE (ptr) == SSA_NAME))
 		    {
 		      tree type = TREE_TYPE (lhs);
-		      unsigned HOST_WIDE_INT bytes;
+		      tree bytes;
 		      if (compute_builtin_object_size (ptr, object_size_type,
-						       &bytes)
-			  && wi::fits_to_tree_p (bytes, type))
+						       &bytes))
 			{
 			  tree tem = make_ssa_name (type);
 			  gimple_call_set_lhs (call, tem);
 			  enum tree_code code
 			    = object_size_type == 1 ? MIN_EXPR : MAX_EXPR;
-			  tree cst = build_int_cstu (type, bytes);
+			  tree cst = fold_convert (type, bytes);
 			  gimple *g
 			    = gimple_build_assign (lhs, code, tem, cst);
 			  gsi_insert_after (&i, g, GSI_NEW_STMT);
