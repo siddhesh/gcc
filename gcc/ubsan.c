@@ -2160,33 +2160,33 @@ instrument_object_size (gimple_stmt_iterator *gsi, tree t, bool is_lhs)
   if (decl_p)
     base_addr = build1 (ADDR_EXPR,
 			build_pointer_type (TREE_TYPE (base)), base);
-  unsigned HOST_WIDE_INT size;
-  if (compute_builtin_object_size (base_addr, 0, &size))
-    sizet = build_int_cst (sizetype, size);
-  else if (optimize)
+  if (!compute_builtin_object_size (base_addr, 0, &sizet))
     {
-      if (LOCATION_LOCUS (loc) == UNKNOWN_LOCATION)
-	loc = input_location;
-      /* Generate __builtin_object_size call.  */
-      sizet = builtin_decl_explicit (BUILT_IN_OBJECT_SIZE);
-      sizet = build_call_expr_loc (loc, sizet, 2, base_addr,
-				   integer_zero_node);
-      sizet = force_gimple_operand_gsi (gsi, sizet, false, NULL_TREE, true,
-					GSI_SAME_STMT);
-      /* If the call above didn't end up being an integer constant, go one
-	 statement back and get the __builtin_object_size stmt.  Save it,
-	 we might need it later.  */
-      if (SSA_VAR_P (sizet))
+      if (optimize)
 	{
-	  gsi_prev (gsi);
-	  bos_stmt = gsi_stmt (*gsi);
+	  if (LOCATION_LOCUS (loc) == UNKNOWN_LOCATION)
+	    loc = input_location;
+	  /* Generate __builtin_object_size call.  */
+	  sizet = builtin_decl_explicit (BUILT_IN_OBJECT_SIZE);
+	  sizet = build_call_expr_loc (loc, sizet, 2, base_addr,
+				       integer_zero_node);
+	  sizet = force_gimple_operand_gsi (gsi, sizet, false, NULL_TREE, true,
+					    GSI_SAME_STMT);
+	  /* If the call above didn't end up being an integer constant, go one
+	     statement back and get the __builtin_object_size stmt.  Save it,
+	     we might need it later.  */
+	  if (SSA_VAR_P (sizet))
+	    {
+	      gsi_prev (gsi);
+	      bos_stmt = gsi_stmt (*gsi);
 
-	  /* Move on to where we were.  */
-	  gsi_next (gsi);
+	      /* Move on to where we were.  */
+	      gsi_next (gsi);
+	    }
 	}
+      else
+	return;
     }
-  else
-    return;
 
   /* Generate UBSAN_OBJECT_SIZE (ptr, ptr+sizeof(*ptr)-base, objsize, ckind)
      call.  */
