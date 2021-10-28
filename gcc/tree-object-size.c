@@ -584,7 +584,8 @@ alloc_object_size (const gcall *call, int object_size_type)
   gcc_assert (is_gimple_call (call));
 
   tree calltype;
-  if (tree callfn = gimple_call_fndecl (call))
+  tree callfn = gimple_call_fndecl (call);
+  if (callfn)
     calltype = TREE_TYPE (callfn);
   else
     calltype = gimple_call_fntype (call);
@@ -604,12 +605,13 @@ alloc_object_size (const gcall *call, int object_size_type)
       if (TREE_CHAIN (p))
         arg2 = TREE_INT_CST_LOW (TREE_VALUE (TREE_CHAIN (p)))-1;
     }
+  else if (gimple_call_builtin_p (call, BUILT_IN_NORMAL)
+	   && callfn && ALLOCA_FUNCTION_CODE_P (DECL_FUNCTION_CODE (callfn)))
+  arg1 = 0;
 
-  if (arg1 < 0 || arg1 >= (int)gimple_call_num_args (call)
-      || TREE_CODE (gimple_call_arg (call, arg1)) != INTEGER_CST
-      || (arg2 >= 0
-	  && (arg2 >= (int)gimple_call_num_args (call)
-	      || TREE_CODE (gimple_call_arg (call, arg2)) != INTEGER_CST)))
+  /* Non-const arguments are OK here, let the caller handle constness.  */
+  if (arg1 < 0 || arg1 >= (int) gimple_call_num_args (call)
+      || arg2 >= (int) gimple_call_num_args (call))
     return size_unknown (object_size_type);
 
   tree bytes = NULL_TREE;
@@ -620,7 +622,10 @@ alloc_object_size (const gcall *call, int object_size_type)
   else if (arg1 >= 0)
     bytes = fold_convert (sizetype, gimple_call_arg (call, arg1));
 
-  return bytes;
+  if (bytes)
+    return STRIP_NOPS (bytes);
+
+  return size_unknown (object_size_type);
 }
 
 
@@ -1156,7 +1161,12 @@ call_object_size (struct object_size_info *osi, gcall *call)
 
   gcc_assert (is_gimple_call (call));
 
-  return alloc_object_size (call, object_size_type);
+  tree bytes = alloc_object_size (call, object_size_type);
+
+  if ((object_size_type & OST_DYNAMIC) || TREE_CODE (bytes) == INTEGER_CST)
+    return bytes;
+
+  return  size_unknown (object_size_type);
 }
 
 
