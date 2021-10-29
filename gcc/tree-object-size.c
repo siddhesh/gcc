@@ -32,6 +32,7 @@ along with GCC; see the file COPYING3.  If not see
 #include "gimple-fold.h"
 #include "gimple-iterator.h"
 #include "tree-cfg.h"
+#include "tree-dfa.h"
 #include "stringpool.h"
 #include "attribs.h"
 #include "builtins.h"
@@ -1373,6 +1374,58 @@ phi_dynamic_object_size (struct object_size_info *osi, tree var)
   return res;
 }
 
+/* Find size of an object passed as a parameter to the function.  */
+
+static tree
+parm_object_size (struct object_size_info *osi, tree var)
+{
+  int object_size_type = osi->object_size_type;
+  tree parm = SSA_NAME_VAR (var);
+
+  if (dump_file)
+    {
+      fprintf (dump_file, "Object is a parameter: ");
+      print_generic_expr (dump_file, parm, dump_flags);
+      fprintf (dump_file, " which is %s a pointer type\n",
+	       POINTER_TYPE_P (TREE_TYPE (parm)) ? "" : "not");
+    }
+
+  if (!(object_size_type & OST_DYNAMIC) || !POINTER_TYPE_P (TREE_TYPE (parm)))
+    return expr_object_size (osi, parm);
+
+  /* Look for access attribute.  */
+  rdwr_map rdwr_idx;
+
+  tree fndecl = cfun->decl;
+  const attr_access *access = get_parm_access (rdwr_idx, parm, fndecl);
+  tree typesize = TYPE_SIZE_UNIT (TREE_TYPE (TREE_TYPE (parm)));
+
+  if (access && access->sizarg != UINT_MAX)
+    {
+      tree fnargs = DECL_ARGUMENTS (fndecl);
+      tree arg = NULL_TREE;
+      unsigned argpos = 0;
+
+      /* Walk through the parameters to pick the size parameter and safely
+	 scale it by the type size.  */
+      for (arg = fnargs; argpos != access->sizarg && arg;
+	   arg = TREE_CHAIN (arg), ++argpos);
+
+      if (arg != NULL_TREE && INTEGRAL_TYPE_P (TREE_TYPE (arg)))
+	{
+	  tree sz = get_or_create_ssa_default_def (cfun, arg);
+	  if (sz != NULL_TREE)
+	    {
+	      sz = fold_convert (sizetype, sz);
+	      if (typesize)
+		sz = size_binop (MULT_EXPR, sz, typesize);
+	      return sz;
+	    }
+	}
+    }
+  return size_unknown (object_size_type);
+}
+
 /* Compute object sizes for VAR.
    For ADDR_EXPR an object size is the number of remaining bytes
    to the end of the object (where what is considered an object depends on
@@ -1483,7 +1536,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
     case GIMPLE_NOP:
       if (SSA_NAME_VAR (var)
 	  && TREE_CODE (SSA_NAME_VAR (var)) == PARM_DECL)
-	res = expr_object_size (osi, SSA_NAME_VAR (var));
+	res = parm_object_size (osi, var);
       else
 	/* Uninitialized SSA names point nowhere.  */
 	res = size_unknown (object_size_type);
