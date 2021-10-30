@@ -35,11 +35,12 @@ along with GCC; see the file COPYING3.  If not see
 #include "stringpool.h"
 #include "attribs.h"
 #include "builtins.h"
+#include "gimplify-me.h"
 
 struct object_size_info
 {
   int object_size_type;
-  bitmap visited, reexamine;
+  bitmap visited, reexamine, phiresults;
   vec<unsigned> tempsize_objs;
 };
 
@@ -681,7 +682,7 @@ reducing_size (tree orig, tree expr, bool found_minus)
    simplified expression.  */
 
 static tree
-estimate_size (object_size_info *osi, tree size)
+estimate_size (object_size_info *osi, tree size, bitmap *visitlog = NULL)
 {
   enum tree_code code = TREE_CODE (size);
   int object_size_type = osi->object_size_type;
@@ -691,15 +692,38 @@ estimate_size (object_size_info *osi, tree size)
     case SSA_NAME:
 	{
 	  unsigned num = SSA_NAME_VERSION (size);
-	  if (!bitmap_bit_p (osi->reexamine, num))
+	  if (!bitmap_bit_p (osi->reexamine, num)
+	      || (visitlog && !bitmap_set_bit (*visitlog, num)))
 	    return size;
+	  gimple *stmt = SSA_NAME_DEF_STMT (size);
+	  if (stmt)
+	    {
+	      /* Only the PHI results are added to gimple.  */
+	      gcc_checking_assert (gimple_code (stmt) == GIMPLE_PHI);
+	      gcc_checking_assert (osi->object_size_type & OST_DYNAMIC);
+	      unsigned i, num_args = gimple_phi_num_args (stmt);
+
+	      gcc_checking_assert (num_args > 0);
+	      for (i = 0; i < num_args; i++)
+		{
+		  tree rhs = gimple_phi_arg_def (stmt, i);
+
+		  if (TREE_CODE (rhs) == SSA_NAME
+		      && bitmap_bit_p (osi->reexamine, SSA_NAME_VERSION (rhs)))
+		    rhs = estimate_size (osi, rhs, visitlog);
+
+		  if (size_unknown_p (rhs, object_size_type))
+		    return size_unknown (object_size_type);
+		}
+	      return size;
+	    }
 	  return object_sizes_get (osi, osi->tempsize_objs[num]);
 	}
     case MIN_EXPR:
     case MAX_EXPR:
 	{
-	  tree op0 = estimate_size (osi, TREE_OPERAND (size, 0));
-	  tree op1 = estimate_size (osi, TREE_OPERAND (size, 1));
+	  tree op0 = estimate_size (osi, TREE_OPERAND (size, 0), visitlog);
+	  tree op1 = estimate_size (osi, TREE_OPERAND (size, 1), visitlog);
 	  if (size_unknown_p (op0, object_size_type)
 	      || size_unknown_p (op1, object_size_type))
 	    return size_unknown (object_size_type);
@@ -708,7 +732,7 @@ estimate_size (object_size_info *osi, tree size)
     case MINUS_EXPR:
     case PLUS_EXPR:
 	{
-	  tree ret = estimate_size (osi, TREE_OPERAND (size, 0));
+	  tree ret = estimate_size (osi, TREE_OPERAND (size, 0), visitlog);
 
 	  if (size_unknown_p (ret, object_size_type))
 	    return size_unknown (object_size_type);
@@ -821,12 +845,116 @@ resolve_dependency_loops (struct object_size_info *osi)
       if (TREE_CODE (szexpr) == INTEGER_CST)
 	continue;
       tree sz = estimate_size (osi, szexpr);
+      gcc_checking_assert (TREE_CODE (sz) == INTEGER_CST);
       object_sizes_initialize (osi, i, sz);
     }
 
   /* Release all the SSA names we created.  */
   EXECUTE_IF_SET_IN_BITMAP (osi->reexamine, 0, i, bi)
     release_ssa_name (ssa_name (i));
+}
+
+static void
+get_insertion_point (struct object_size_info *osi, unsigned ssano,
+		     gimple_stmt_iterator *gsi)
+{
+  unsigned varno = osi->tempsize_objs[ssano];
+  gimple *stmt = SSA_NAME_DEF_STMT (ssa_name (varno));
+
+  switch (gimple_code (stmt))
+    {
+    case GIMPLE_NOP:
+      *gsi = gsi_start_bb (single_succ (ENTRY_BLOCK_PTR_FOR_FN (cfun)));
+      break;
+    case GIMPLE_PHI:
+	{
+	  gimple *size_stmt = SSA_NAME_DEF_STMT (object_sizes_get (osi,
+								   varno));
+
+	  for (unsigned i = 0; i < gimple_phi_num_args (stmt); i++)
+	    {
+	      tree rhs = gimple_phi_arg_def (size_stmt, i);
+	      if (TREE_CODE (rhs) == SSA_NAME
+		  && SSA_NAME_VERSION (rhs) == ssano)
+		{
+		  edge e = gimple_phi_arg_edge (as_a <gphi *> (stmt), i);
+		  *gsi = gsi_last_bb (e->src);
+		  break;
+		}
+	    }
+	  break;
+	}
+    default:
+      *gsi = gsi_for_stmt (stmt);
+    }
+}
+
+static void
+gimplify_size_expressions (object_size_info *osi)
+{
+  int object_size_type = osi->object_size_type;
+  bitmap_iterator bi;
+  unsigned int i;
+  bool changed;
+
+  /* Step 1: Propagate unknowns into expressions.  */
+  bitmap tempsize_free = BITMAP_ALLOC (NULL);
+  do
+    {
+      changed = false;
+      EXECUTE_IF_SET_IN_BITMAP (osi->reexamine, 0, i, bi)
+	{
+	  unsigned varno = osi->tempsize_objs[i];
+
+	  tree cur = object_sizes_get (osi, varno);
+
+	  if (size_unknown_p (cur, object_size_type))
+	    {
+	      bitmap_set_bit (tempsize_free, i);
+	      continue;
+	    }
+
+	  tree szexpr = object_sizes_get (osi, i);
+	  bitmap visitlog = BITMAP_ALLOC (NULL);
+	  tree sz = estimate_size (osi, szexpr, &visitlog);
+
+	  if (size_unknown_p (sz, object_size_type))
+	    {
+	      gimple *stmt = SSA_NAME_DEF_STMT (cur);
+	      if (stmt)
+		{
+		  gimple_stmt_iterator gsi = gsi_for_stmt (stmt);
+		  remove_phi_node (&gsi, true);
+		}
+	      bitmap_set_bit (tempsize_free, i);
+	      object_sizes_initialize (osi, varno, sz);
+	      changed = true;
+	    }
+	}
+      bitmap_and_compl_into (osi->reexamine, tempsize_free);
+    }
+  while (changed);
+
+  /* Expand all size expressions to put their definitions close to the objects
+     for whom size is being computed.  */
+  bitmap_and_compl_into (osi->reexamine, osi->phiresults);
+  EXECUTE_IF_SET_IN_BITMAP (osi->reexamine, 0, i, bi)
+    {
+      gimple_stmt_iterator gsi;
+      gimple_seq seq = NULL;
+      tree size_expr = object_sizes_get (osi, i);
+
+      size_expr = size_binop (MODIFY_EXPR, ssa_name (i), size_expr);
+      force_gimple_operand (size_expr, &seq, true, NULL);
+
+      get_insertion_point (osi, i, &gsi);
+      gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
+    }
+
+  EXECUTE_IF_SET_IN_BITMAP (tempsize_free, 0, i, bi)
+    release_ssa_name (ssa_name (i));
+
+  BITMAP_FREE (tempsize_free);
 }
 
 /* Compute __builtin_object_size value for PTR and set *PSIZE to
@@ -909,11 +1037,17 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 
       osi.visited = BITMAP_ALLOC (NULL);
       osi.reexamine = BITMAP_ALLOC (NULL);
+      osi.phiresults = BITMAP_ALLOC (NULL);
       osi.tempsize_objs.create (0);
       collect_object_sizes_for (&osi, ptr);
 
       if (!bitmap_empty_p (osi.reexamine))
-	resolve_dependency_loops (&osi);
+	{
+	  if (dynamic)
+	    gimplify_size_expressions (&osi);
+	  else
+	    resolve_dependency_loops (&osi);
+	}
 
       /* Debugging dumps.  */
       if (dump_file)
@@ -936,6 +1070,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 	}
 
       osi.tempsize_objs.release ();
+      BITMAP_FREE (osi.phiresults);
       BITMAP_FREE (osi.reexamine);
       BITMAP_FREE (osi.visited);
     }
@@ -967,6 +1102,24 @@ make_tempsize (struct object_size_info *osi, unsigned varno)
   bitmap_set_bit (osi->reexamine, ssano);
   osi->tempsize_objs[ssano] = varno;
 
+  return ssa;
+}
+
+/* Get the temp size variable if it exists for the object with VARNO as ssa
+   name version and if it doesn't exist, create one.  */
+
+static tree
+make_or_get_tempsize (struct object_size_info *osi, unsigned varno)
+{
+  tree ssa = object_sizes_get (osi, varno);
+  if (TREE_CODE (ssa) != SSA_NAME)
+    ssa = make_tempsize (osi, varno);
+  else if (dump_file)
+    {
+      fprintf (dump_file, "  temp name already assigned: ");
+      print_generic_expr (dump_file, ssa, dump_flags);
+      fprintf (dump_file, "\n");
+    }
   return ssa;
 }
 
@@ -1114,7 +1267,110 @@ cond_expr_object_size (struct object_size_info *osi, gimple *stmt)
   else
     elsebytes = expr_object_size (osi, else_);
 
+  if (size_unknown_p (thenbytes, object_size_type)
+      || size_unknown_p (elsebytes, object_size_type))
+    return size_unknown (object_size_type);
+
+  if (object_size_type & OST_DYNAMIC)
+    return fold_build3 (COND_EXPR, sizetype, gimple_assign_rhs1 (stmt),
+			thenbytes, elsebytes);
+
   return size_binop (OST_TREE_CODE (object_size_type), thenbytes, elsebytes);
+}
+
+static tree
+phi_object_size (struct object_size_info *osi, gimple *stmt)
+{
+  int object_size_type = osi->object_size_type;
+  unsigned i;
+
+  tree res = size_initval (object_size_type);
+
+  for (i = 0; i < gimple_phi_num_args (stmt); i++)
+    {
+      tree rhs = gimple_phi_arg (stmt, i)->def;
+      tree phires;
+
+      if (TREE_CODE (rhs) == SSA_NAME)
+	phires = ssa_object_size (osi, rhs, size_int (0));
+      else
+	phires = expr_object_size (osi, rhs);
+
+      res = size_binop (OST_TREE_CODE (object_size_type), res, phires);
+
+      if (size_unknown_p (phires, object_size_type))
+	break;
+    }
+  return res;
+}
+
+static tree
+phi_dynamic_object_size (struct object_size_info *osi, tree var)
+{
+  int object_size_type = osi->object_size_type;
+  unsigned int varno = SSA_NAME_VERSION (var);
+  gimple *stmt = SSA_NAME_DEF_STMT (var);
+  unsigned i, num_args = gimple_phi_num_args (stmt);
+  tree res;
+
+  vec<tree> sizes;
+  sizes.create (0);
+  sizes.safe_grow (num_args);
+
+  /* Bail out if the size of any of the PHI arguments cannot be
+     determined.  */
+  for (i = 0; i < num_args; i++)
+    {
+      tree rhs = gimple_phi_arg_def (stmt, i);
+      tree sz;
+
+      if (TREE_CODE (rhs) != SSA_NAME)
+	sz = expr_object_size (osi, rhs);
+      else
+	sz = ssa_object_size (osi, rhs, size_int (0));
+
+      if (size_unknown_p (sz, object_size_type))
+	break;
+
+      sizes[i] = sz;
+    }
+
+  if (i == num_args)
+    {
+      res = make_or_get_tempsize (osi, varno);
+      bitmap_set_bit (osi->phiresults, SSA_NAME_VERSION (res));
+      object_sizes_initialize (osi, SSA_NAME_VERSION (res), res);
+
+      gphi *phi = create_phi_node (res, gimple_bb (stmt));
+      gphi *obj_phi =  as_a <gphi *> (stmt);
+
+      for (unsigned i = 0; i < gimple_phi_num_args (stmt); i++)
+	{
+	  if (!is_gimple_variable (sizes[i]))
+	    {
+	      tree ssa = make_tempsize (osi, varno);
+	      object_sizes_initialize (osi, SSA_NAME_VERSION (ssa), sizes[i]);
+	      sizes[i] = ssa;
+	    }
+
+	  add_phi_arg (phi, sizes[i],
+		       gimple_phi_arg_edge (obj_phi, i),
+		       gimple_phi_arg_location (obj_phi, i));
+	}
+
+      if (dump_file)
+	{
+	  print_generic_expr (dump_file, var, dump_flags);
+	  fprintf (dump_file, ": PHI Node with result: ");
+	  print_gimple_stmt (dump_file, phi, dump_flags);
+	}
+    }
+  else
+    res = size_unknown (object_size_type);
+
+  sizes.release ();
+
+  return res;
 }
 
 /* Compute object sizes for VAR.
@@ -1164,14 +1420,7 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 	  print_generic_expr (dump_file, var, dump_flags);
 	  fprintf (dump_file, "\n");
 	}
-      res = object_sizes_get (osi, varno);
-      if (TREE_CODE (res) != SSA_NAME)
-	res = make_tempsize (osi, varno);
-      else if (dump_file)
-	{
-	  fprintf (dump_file, "  temp name already assigned: ");
-	  print_generic_expr (dump_file, res, dump_flags);
-	}
+      res = make_or_get_tempsize (osi, varno);
       goto out;
     }
 
@@ -1242,33 +1491,23 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
 
     case GIMPLE_PHI:
       {
-	unsigned i;
-
-	res = size_initval (object_size_type);
-
-	for (i = 0; i < gimple_phi_num_args (stmt); i++)
-	  {
-	    tree rhs = gimple_phi_arg (stmt, i)->def;
-	    tree phires;
-
-	    if (object_sizes_unknown_p (object_size_type, varno))
-	      break;
-
-	    if (TREE_CODE (rhs) == SSA_NAME)
-	      phires = ssa_object_size (osi, rhs, size_int (0));
-	    else
-	      phires = expr_object_size (osi, rhs);
-
-	    res = size_binop (OST_TREE_CODE (object_size_type), res, phires);
-
-	    if (size_unknown_p (phires, object_size_type))
-	      break;
-	  }
+	if (object_size_type & OST_DYNAMIC)
+	  res = phi_dynamic_object_size (osi, var);
+	else
+	  res = phi_object_size (osi, stmt);
 	break;
       }
 
     default:
       gcc_unreachable ();
+    }
+
+  if ((object_size_type & OST_DYNAMIC)
+      && TREE_CODE (res) != INTEGER_CST && !is_gimple_variable (res))
+    {
+      tree ssa = make_or_get_tempsize (osi, varno);
+      object_sizes_initialize (osi, SSA_NAME_VERSION (ssa), res);
+      res = ssa;
     }
   bitmap_set_bit (computed[object_size_type], varno);
 out:
@@ -1419,7 +1658,7 @@ object_sizes_execute (function *fun, bool early)
 	     and rather than folding the builtin to the constant if any,
 	     create a MIN_EXPR or MAX_EXPR of the __builtin_object_size
 	     call result and the computed constant.  */
-	  if (early)
+	  if (early && !dynamic)
 	    {
 	      early_object_sizes_execute_one (&i, call);
 	      continue;
