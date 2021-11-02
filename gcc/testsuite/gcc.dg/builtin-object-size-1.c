@@ -376,6 +376,7 @@ test6 (size_t x)
 {
   struct T { char buf[64]; char buf2[64]; } t;
   char *p = &t.buf[8];
+  char *r = t.buf2;
   size_t i;
 
   for (i = 0; i < x; ++i)
@@ -383,6 +384,21 @@ test6 (size_t x)
   if (__builtin_object_size (p, 0) != sizeof (t) - 8)
     abort ();
   memset (p, ' ', sizeof (t) - 8 - 4 * 4);
+  p = &t.buf[8];
+  for (i = 0; i < x; i++)
+    {
+      r = __builtin_memcpy (r, t.buf, i);
+      p = r + 1;
+    }
+  if (__builtin_object_size (p, 0) != sizeof (t) - 8)
+    abort ();
+  for (i = 0; i < x; i++)
+    {
+      r = __builtin_mempcpy (r, t.buf, i);
+      p = r + 1;
+    }
+  if (__builtin_object_size (p, 0) != -1)
+    abort ();
 }
 
 void
