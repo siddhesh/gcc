@@ -123,6 +123,16 @@ size_unknown_p (tree val, int object_size_type)
 	  && tree_to_uhwi (val) == unknown (object_size_type));
 }
 
+/* Return true if VAL is represents a known size for OBJECT_SIZE_TYPE.  */
+
+static inline bool
+size_known_p (tree val, int object_size_type)
+{
+  return (!size_unknown_p (val, object_size_type)
+	  && ((object_size_type & OST_DYNAMIC)
+	      || TREE_CODE (val) == INTEGER_CST));
+}
+
 /* Return a tree with initial value for OBJECT_SIZE_TYPE.  */
 
 static inline tree
@@ -391,16 +401,15 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
       if (!size_unknown_p (sz, object_size_type))
 	{
 	  tree offset = TREE_OPERAND (pt_var, 1);
-	  if (TREE_CODE (offset) != INTEGER_CST
-	      || TREE_CODE (sz) != INTEGER_CST)
+	  if (TREE_CODE (offset) != INTEGER_CST)
 	    sz = size_unknown (object_size_type);
 	  else
 	    sz = size_for_offset (sz, offset);
 	}
 
       if (!size_unknown_p (sz, object_size_type)
-	  && TREE_CODE (sz) == INTEGER_CST
-	  && compare_tree_int (sz, offset_limit) < 0)
+	  && (TREE_CODE (sz) != INTEGER_CST
+	      || compare_tree_int (sz, offset_limit) < 0))
 	pt_var_size = sz;
     }
   else if (DECL_P (pt_var))
@@ -416,8 +425,9 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 
   if (pt_var_size)
     {
-      /* Validate the size determined above.  */
-      if (compare_tree_int (pt_var_size, offset_limit) >= 0)
+      /* Validate the size determined above if it is a constant.  */
+      if (TREE_CODE (pt_var_size) == INTEGER_CST
+	  && compare_tree_int (pt_var_size, offset_limit) >= 0)
 	return false;
     }
 
@@ -441,7 +451,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	    var = TREE_OPERAND (var, 0);
 	  if (! TYPE_SIZE_UNIT (TREE_TYPE (var))
 	      || ! tree_fits_uhwi_p (TYPE_SIZE_UNIT (TREE_TYPE (var)))
-	      || (pt_var_size
+	      || (pt_var_size && TREE_CODE (pt_var_size) == INTEGER_CST
 		  && tree_int_cst_lt (pt_var_size,
 				      TYPE_SIZE_UNIT (TREE_TYPE (var)))))
 	    var = pt_var;
@@ -455,17 +465,11 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 		switch (TREE_CODE (v))
 		  {
 		  case ARRAY_REF:
-		    if (TYPE_SIZE_UNIT (TREE_TYPE (TREE_OPERAND (v, 0)))
-			&& TREE_CODE (TREE_OPERAND (v, 1)) == INTEGER_CST)
+		    if (TYPE_SIZE_UNIT (TREE_TYPE (TREE_OPERAND (v, 0))))
 		      {
 			tree domain
 			  = TYPE_DOMAIN (TREE_TYPE (TREE_OPERAND (v, 0)));
-			if (domain
-			    && TYPE_MAX_VALUE (domain)
-			    && TREE_CODE (TYPE_MAX_VALUE (domain))
-			       == INTEGER_CST
-			    && tree_int_cst_lt (TREE_OPERAND (v, 1),
-						TYPE_MAX_VALUE (domain)))
+			if (domain && TYPE_MAX_VALUE (domain))
 			  {
 			    v = NULL_TREE;
 			    break;
@@ -532,20 +536,20 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	var = pt_var;
 
       if (var != pt_var)
-	var_size = TYPE_SIZE_UNIT (TREE_TYPE (var));
+	{
+	  var_size = TYPE_SIZE_UNIT (TREE_TYPE (var));
+	  if (!TREE_CONSTANT (var_size))
+	    var_size = get_or_create_ssa_default_def (cfun, var_size);
+	  if (!var_size)
+	    return false;
+	}
       else if (!pt_var_size)
 	return false;
       else
 	var_size = pt_var_size;
       bytes = compute_object_offset (TREE_OPERAND (ptr, 0), var);
       if (bytes != error_mark_node)
-	{
-	  if (TREE_CODE (bytes) == INTEGER_CST
-	      && tree_int_cst_lt (var_size, bytes))
-	    bytes = size_zero_node;
-	  else
-	    bytes = size_binop (MINUS_EXPR, var_size, bytes);
-	}
+	bytes = size_for_offset (var_size, bytes);
       if (var != pt_var
 	  && pt_var_size
 	  && TREE_CODE (pt_var) == MEM_REF
@@ -554,11 +558,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	  tree bytes2 = compute_object_offset (TREE_OPERAND (ptr, 0), pt_var);
 	  if (bytes2 != error_mark_node)
 	    {
-	      if (TREE_CODE (bytes2) == INTEGER_CST
-		  && tree_int_cst_lt (pt_var_size, bytes2))
-		bytes2 = size_zero_node;
-	      else
-		bytes2 = size_binop (MINUS_EXPR, pt_var_size, bytes2);
+	      bytes2 = size_for_offset (pt_var_size, bytes2);
 	      bytes = size_binop (MIN_EXPR, bytes, bytes2);
 	    }
 	}
@@ -568,8 +568,13 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
   else
     bytes = pt_var_size;
 
-  *psize = bytes;
-  return true;
+  if (size_known_p (bytes, object_size_type))
+    {
+      *psize = bytes;
+      return true;
+    }
+
+  return false;
 }
 
 
@@ -739,19 +744,27 @@ estimate_size (object_size_info *osi, tree size, bitmap *visitlog = NULL)
     case PLUS_EXPR:
 	{
 	  tree ret = estimate_size (osi, TREE_OPERAND (size, 0), visitlog);
+	  tree off = TREE_OPERAND (size, 1);
 
 	  if (size_unknown_p (ret, object_size_type))
 	    return size_unknown (object_size_type);
 
-	  tree off = TREE_OPERAND (size, 1);
-	  gcc_checking_assert (TREE_CODE (off) == INTEGER_CST);
-
-	  if (code == PLUS_EXPR)
-	    off = fold_build1 (NEGATE_EXPR, sizetype, off);
-
-	  if (tree_fits_uhwi_p (ret) && tree_int_cst_le (ret, off))
-	    return size_int (0);
-	  return size_binop (MINUS_EXPR, ret, off);
+	  /* We don't need this for dynamic object sizes because we don't make
+	     reducing estimates like in case of static sizes.  Instead, we
+	     return an expression that gives the precise size after a specific
+	     number of iterations, reducing to zero at runtime if the pointer
+	     being evaluated overflows.  */
+	  if (!(object_size_type & OST_DYNAMIC))
+	    {
+	      gcc_checking_assert (TREE_CODE (off) == INTEGER_CST);
+	      if (code == PLUS_EXPR)
+		{
+		  off = fold_build1 (NEGATE_EXPR, sizetype, off);
+		  ret = size_binop (MAX_EXPR, ret, off);
+		  code = MINUS_EXPR;
+		}
+	    }
+	  return size_binop (code, ret, off);
 	}
     case INTEGER_CST:
     default:
@@ -1163,7 +1176,7 @@ call_object_size (struct object_size_info *osi, gcall *call)
 
   tree bytes = alloc_object_size (call, object_size_type);
 
-  if ((object_size_type & OST_DYNAMIC) || TREE_CODE (bytes) == INTEGER_CST)
+  if (size_known_p (bytes, object_size_type))
     return bytes;
 
   return  size_unknown (object_size_type);

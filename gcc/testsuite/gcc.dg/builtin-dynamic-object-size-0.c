@@ -219,6 +219,60 @@ test_deploop (size_t sz, size_t cond)
   return __builtin_dynamic_object_size (bin, 0);
 }
 
+/* Address expressions.  */
+
+struct dynarray_struct
+{
+  long a;
+  char c[16];
+  int b;
+};
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct (size_t sz, size_t off)
+{
+  struct dynarray_struct bin[sz];
+
+  return __builtin_dynamic_object_size (&bin[off].c, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_subobj (size_t sz, size_t off)
+{
+  struct dynarray_struct bin[sz];
+
+  return __builtin_dynamic_object_size (&bin[off].c[4], 1);
+}
+
+size_t
+__attribute__ ((noinline))
+test_dynarray_struct_subobj2 (size_t sz, size_t off, size_t *objsz)
+{
+  struct dynarray_struct2
+    {
+      long a;
+      int b;
+      char c[sz];
+    };
+
+  struct dynarray_struct2 bin;
+
+  *objsz = sizeof (bin);
+
+  return __builtin_dynamic_object_size (&bin.c[off], 1);
+}
+
+size_t
+__attribute__ ((noinline))
+test_substring (size_t sz, size_t off)
+{
+  char str[sz];
+
+  return __builtin_dynamic_object_size (&str[off], 0);
+}
+
 size_t
 __attribute__ ((access (__read_write__, 1, 2)))
 test_parmsz_simple (void *obj, size_t sz)
@@ -285,6 +339,23 @@ main (int argc, char **argv)
   if (test_passthrough_nonssa (argv[0]) != __builtin_strlen (argv[0]) + 1)
     FAIL ();
   if (test_dynarray (__builtin_strlen (argv[0])) != __builtin_strlen (argv[0]))
+    FAIL ();
+  if (test_dynarray_struct (42, 4) !=
+      ((42 - 4) * sizeof (struct dynarray_struct)
+       - __builtin_offsetof (struct dynarray_struct, c)))
+    FAIL ();
+  if (test_dynarray_struct (42, 48) != 0)
+    FAIL ();
+  if (test_substring (128, 4) != 128 - 4)
+    FAIL ();
+  if (test_substring (128, 142) != 0)
+    FAIL ();
+  if (test_dynarray_struct_subobj (42, 4) != 16 - 4)
+    FAIL ();
+  if (test_dynarray_struct_subobj (42, 48) != 0)
+    FAIL ();
+  size_t objsz = 0;
+  if (test_dynarray_struct_subobj2 (42, 4, &objsz) != objsz - 4 - 12)
     FAIL ();
   if (test_dynarray_cond (0) != 16)
     FAIL ();
