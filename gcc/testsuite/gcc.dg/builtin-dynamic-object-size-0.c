@@ -274,11 +274,64 @@ test_substring (size_t sz, size_t off)
 }
 
 size_t
+__attribute__ ((noinline))
+test_substring_ptrplus (size_t sz, size_t off)
+{
+  int str[sz];
+
+  return __builtin_dynamic_object_size (str + off, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+test_substring_ptrplus2 (size_t sz, size_t off, size_t off2)
+{
+  int str[sz];
+  int *ptr = &str[off];
+
+  return __builtin_dynamic_object_size (ptr + off2, 0);
+}
+
+size_t
 __attribute__ ((access (__read_write__, 1, 2)))
 test_parmsz_simple (void *obj, size_t sz)
 {
   return __builtin_dynamic_object_size (obj, 0);
 }
+
+size_t
+__attribute__ ((noinline))
+__attribute__ ((access (__read_write__, 1, 2)))
+test_parmsz (void *obj, size_t sz, size_t off)
+{
+  return __builtin_dynamic_object_size (obj + off, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+__attribute__ ((access (__read_write__, 1, 2)))
+test_parmsz_scale (int *obj, size_t sz, size_t off)
+{
+  return __builtin_dynamic_object_size (obj + off, 0);
+}
+
+size_t
+__attribute__ ((noinline))
+__attribute__ ((access (__read_write__, 1, 2)))
+test_loop (int *obj, size_t sz, size_t start, size_t end, int incr)
+{
+  int *ptr = obj + start;
+
+  for (int i = start; i != end; i = i + incr)
+    {
+      ptr = ptr + incr;
+      if (__builtin_dynamic_object_size (ptr, 0) == 0)
+	return 0;
+    }
+
+  return __builtin_dynamic_object_size (ptr, 0);
+}
+
 
 unsigned nfails = 0;
 
@@ -357,6 +410,14 @@ main (int argc, char **argv)
   size_t objsz = 0;
   if (test_dynarray_struct_subobj2 (42, 4, &objsz) != objsz - 4 - 12)
     FAIL ();
+  if (test_substring_ptrplus (128, 4) != (128 - 4) * sizeof (int))
+    FAIL ();
+  if (test_substring_ptrplus (128, 142) != 0)
+    FAIL ();
+  if (test_substring_ptrplus2 (128, 4, 4) != (128 - 8) * sizeof (int))
+    FAIL ();
+  if (test_substring_ptrplus2 (128, 4, -3) != (128 - 1) * sizeof (int))
+    FAIL ();
   if (test_dynarray_cond (0) != 16)
     FAIL ();
   if (test_dynarray_cond (1) != 8)
@@ -367,6 +428,32 @@ main (int argc, char **argv)
     FAIL ();
   if (test_parmsz_simple (argv[0], __builtin_strlen (argv[0]) + 1)
       != __builtin_strlen (argv[0]) + 1)
+    FAIL ();
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1, -1) != 0)
+    FAIL ();
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1, 0)
+      != __builtin_strlen (argv[0]) + 1)
+    FAIL ();
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1,
+		   __builtin_strlen (argv[0])) != 1)
+    FAIL ();
+  if (test_parmsz (argv[0], __builtin_strlen (argv[0]) + 1,
+		   __builtin_strlen (argv[0]) + 2) != 0)
+    FAIL ();
+  int in[42];
+  if (test_parmsz_scale (in, 42, 2) != 40 * sizeof (int))
+    FAIL ();
+  if (test_loop (in, 42, 0, 32, 1) != 10 * sizeof (int))
+    FAIL ();
+  if (test_loop (in, 42, 32, -1, -1) != 0)
+    FAIL ();
+  if (test_loop (in, 42, 32, 10, -1) != 32 * sizeof (int))
+    FAIL ();
+  if (test_loop (in, 42, 42, 0, -1) != 42 * sizeof (int))
+    FAIL ();
+  if (test_loop (in, 42, 44, 0, -1) != 0)
+    FAIL ();
+  if (test_loop (in, 42, 20, 52, 1) != 0)
     FAIL ();
 
   if (nfails > 0)
