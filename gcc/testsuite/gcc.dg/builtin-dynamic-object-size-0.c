@@ -46,6 +46,14 @@ test_deploop (size_t sz, size_t cond)
   return __builtin_dynamic_object_size (bin, 0);
 }
 
+size_t
+__attribute__ ((access (__read_write__, 1, 2)))
+__attribute__ ((noinline))
+test_parmsz_simple (void *obj, size_t sz)
+{
+  return __builtin_dynamic_object_size (obj, 0);
+}
+
 unsigned nfails = 0;
 
 #define FAIL() ({ \
@@ -63,6 +71,9 @@ main (int argc, char **argv)
   if (test_builtin_calloc_condphi (128, 1, 0) == 128)
     FAIL ();
   if (test_deploop (128, 129) != 32)
+    FAIL ();
+  if (test_parmsz_simple (argv[0], __builtin_strlen (argv[0]) + 1)
+      != __builtin_strlen (argv[0]) + 1)
     FAIL ();
 
   if (nfails > 0)
