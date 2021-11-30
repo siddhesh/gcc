@@ -93,7 +93,9 @@ unknown (int object_size_type)
 static inline void
 object_sizes_grow (int object_size_type)
 {
-  if (num_ssa_names > object_sizes[object_size_type].length ())
+  if (!object_sizes[object_size_type].exists ())
+    object_sizes[object_size_type].create (num_ssa_names);
+  else if (num_ssa_names > object_sizes[object_size_type].length ())
     object_sizes[object_size_type].safe_grow (num_ssa_names, true);
 }
 
