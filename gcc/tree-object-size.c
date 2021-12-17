@@ -64,7 +64,7 @@ static void expr_object_size (struct object_size_info *, tree, tree);
 static bool merge_object_sizes (struct object_size_info *, tree, tree);
 static bool plus_stmt_object_size (struct object_size_info *, tree, gimple *);
 static bool cond_expr_object_size (struct object_size_info *, tree, gimple *);
-static void init_offset_limit (void);
+static void init_limits (void);
 static void check_for_plus_in_loops (struct object_size_info *, tree);
 static void check_for_plus_in_loops_1 (struct object_size_info *, tree,
 				       unsigned int);
@@ -85,20 +85,10 @@ static unsigned HOST_WIDE_INT offset_limit;
 
 /* Initial value of object sizes; zero for maximum and SIZE_MAX for minimum
    object size.  */
-
-static inline unsigned HOST_WIDE_INT
-initval (int object_size_type)
-{
-  return (object_size_type & OST_MINIMUM) ? HOST_WIDE_INT_M1U : 0;
-}
+static unsigned HOST_WIDE_INT initval[OST_END];
 
 /* Unknown object size value; it's the opposite of initval.  */
-
-static inline unsigned HOST_WIDE_INT
-unknown (int object_size_type)
-{
-  return ~initval (object_size_type);
-}
+static unsigned HOST_WIDE_INT unknown[OST_END];
 
 /* Return true if VAL is represents an unknown size for OBJECT_SIZE_TYPE.  */
 
@@ -106,7 +96,7 @@ static inline bool
 size_unknown_p (tree val, int object_size_type)
 {
   return (tree_fits_uhwi_p (val)
-	  && tree_to_uhwi (val) == unknown (object_size_type));
+	  && tree_to_uhwi (val) == unknown[object_size_type]);
 }
 
 /* Return a tree with initial value for OBJECT_SIZE_TYPE.  */
@@ -114,7 +104,7 @@ size_unknown_p (tree val, int object_size_type)
 static inline tree
 size_initval (int object_size_type)
 {
-  return size_int (initval (object_size_type));
+  return size_int (initval[object_size_type]);
 }
 
 /* Return a tree with unknown value for OBJECT_SIZE_TYPE.  */
@@ -122,7 +112,7 @@ size_initval (int object_size_type)
 static inline tree
 size_unknown (int object_size_type)
 {
-  return size_int (unknown (object_size_type));
+  return size_int (unknown[object_size_type]);
 }
 
 /* Grow object_sizes[OBJECT_SIZE_TYPE] to num_ssa_names.  */
@@ -202,13 +192,21 @@ object_sizes_set (struct object_size_info *osi, unsigned varno, tree val,
 
 /* Initialize OFFSET_LIMIT variable.  */
 static void
-init_offset_limit (void)
+init_limits (void)
 {
   if (tree_fits_uhwi_p (TYPE_MAX_VALUE (sizetype)))
     offset_limit = tree_to_uhwi (TYPE_MAX_VALUE (sizetype));
   else
     offset_limit = -1;
   offset_limit /= 2;
+
+  for (int i = 0; i < OST_END; i++)
+    {
+      if (i & OST_MINIMUM)
+	initval[i] = tree_to_uhwi (size_int (HOST_WIDE_INT_M1U));
+      else
+	unknown[i] = tree_to_uhwi (size_int (HOST_WIDE_INT_M1U));
+    }
 }
 
 /* Bytes at end of the object with SZ from offset OFFSET.  If WHOLESIZE is not
@@ -705,7 +703,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
   *psize = size_unknown (object_size_type);
 
   if (! offset_limit)
-    init_offset_limit ();
+    init_limits ();
 
   if (TREE_CODE (ptr) == ADDR_EXPR)
     return addr_object_size (NULL, ptr, object_size_type, psize);
@@ -1374,7 +1372,7 @@ init_object_sizes (void)
       computed[object_size_type] = BITMAP_ALLOC (NULL);
     }
 
-  init_offset_limit ();
+  init_limits ();
 }
 
 
