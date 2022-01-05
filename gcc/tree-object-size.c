@@ -347,9 +347,20 @@ init_offset_limit (void)
    be positive and hence, be within OFFSET_LIMIT for valid offsets.  */
 
 static tree
-size_for_offset (tree sz, tree offset, tree wholesize = NULL_TREE)
+size_for_offset (int object_size_type,tree sz, tree offset,
+		 tree wholesize = NULL_TREE)
 {
   gcc_checking_assert (types_compatible_p (TREE_TYPE (sz), sizetype));
+
+  /* When maximum size is requested and the offset is non-constant, return the
+     whole size instead of bailing out in __builtin_object_size.  */
+  if (!(object_size_type & (OST_MINIMUM | OST_DYNAMIC))
+      && TREE_CODE (offset) != INTEGER_CST)
+    {
+      if (wholesize)
+	sz = wholesize;
+      offset = size_zero_node;
+    }
 
   /* For negative offsets, if we have a distinct WHOLESIZE, use it to get a net
      offset from the whole object.  */
@@ -547,7 +558,8 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	    sz = wholesize = size_unknown (object_size_type);
 	}
       if (!size_unknown_p (sz, object_size_type))
-	sz = size_for_offset (sz, TREE_OPERAND (pt_var, 1), wholesize);
+	sz = size_for_offset (object_size_type, sz, TREE_OPERAND (pt_var, 1),
+			      wholesize);
 
       if (!size_unknown_p (sz, object_size_type)
 	  && (TREE_CODE (sz) != INTEGER_CST
@@ -695,7 +707,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	var_size = pt_var_size;
       bytes = compute_object_offset (TREE_OPERAND (ptr, 0), var);
       if (bytes != error_mark_node)
-	bytes = size_for_offset (var_size, bytes);
+	bytes = size_for_offset (object_size_type, var_size, bytes);
       if (var != pt_var
 	  && pt_var_size
 	  && TREE_CODE (pt_var) == MEM_REF
@@ -704,7 +716,7 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
 	  tree bytes2 = compute_object_offset (TREE_OPERAND (ptr, 0), pt_var);
 	  if (bytes2 != error_mark_node)
 	    {
-	      bytes2 = size_for_offset (pt_var_size, bytes2);
+	      bytes2 = size_for_offset (object_size_type, pt_var_size, bytes2);
 	      bytes = size_binop (MIN_EXPR, bytes, bytes2);
 	    }
 	}
@@ -1058,7 +1070,7 @@ compute_builtin_object_size (tree ptr, int object_size_type,
 		  && compute_builtin_object_size (ptr, object_size_type,
 						  psize))
 		{
-		  *psize = size_for_offset (*psize, offset);
+		  *psize = size_for_offset (object_size_type, *psize, offset);
 		  return true;
 		}
 	    }
@@ -1323,43 +1335,42 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
     return false;
 
   /* Handle PTR + OFFSET here.  */
-  if (((object_size_type & OST_DYNAMIC) || TREE_CODE (op1) == INTEGER_CST)
-      && (TREE_CODE (op0) == SSA_NAME
-	  || TREE_CODE (op0) == ADDR_EXPR))
+  if (TREE_CODE (op0) == SSA_NAME)
     {
-      if (TREE_CODE (op0) == SSA_NAME)
-	{
-	  if (osi->pass == 0)
-	    collect_object_sizes_for (osi, op0);
+      if (osi->pass == 0)
+	collect_object_sizes_for (osi, op0);
 
-	  bytes = object_sizes_get (osi, SSA_NAME_VERSION (op0));
-	  wholesize = object_sizes_get (osi, SSA_NAME_VERSION (op0), true);
-	  reexamine = bitmap_bit_p (osi->reexamine, SSA_NAME_VERSION (op0));
-	}
-      else
-	{
-	  /* op0 will be ADDR_EXPR here.  We should never come here during
-	     reexamination.  */
-	  gcc_checking_assert (osi->pass == 0);
-	  addr_object_size (osi, op0, object_size_type, &bytes, &wholesize);
-	}
-
-      /* In the first pass, do not compute size for offset if either the
-	 maximum size is unknown or the minimum size is not initialized yet;
-	 the latter indicates a dependency loop and will be resolved in
-	 subsequent passes.  We attempt to compute offset for 0 minimum size
-	 too because a negative offset could be within bounds of WHOLESIZE,
-	 giving a non-zero result for VAR.  */
-      if (osi->pass != 0 || !size_unknown_p (bytes, 0))
-	bytes = size_for_offset (bytes, op1, wholesize);
+      bytes = object_sizes_get (osi, SSA_NAME_VERSION (op0));
+      wholesize = object_sizes_get (osi, SSA_NAME_VERSION (op0), true);
+      reexamine = bitmap_bit_p (osi->reexamine, SSA_NAME_VERSION (op0));
+    }
+  else if (TREE_CODE (op0) == ADDR_EXPR)
+    {
+      /* op0 will be ADDR_EXPR here.  We should never come here during
+	 reexamination.  */
+      gcc_checking_assert (osi->pass == 0);
+      addr_object_size (osi, op0, object_size_type, &bytes, &wholesize);
     }
   else
-    bytes = wholesize = size_unknown (object_size_type);
+    {
+      bytes = wholesize = size_unknown (object_size_type);
+      goto out;
+    }
+
+  /* In the first pass, do not compute size for offset if either the
+     maximum size is unknown or the minimum size is not initialized yet;
+     the latter indicates a dependency loop and will be resolved in
+     subsequent passes.  We attempt to compute offset for 0 minimum size
+     too because a negative offset could be within bounds of WHOLESIZE,
+     giving a non-zero result for VAR.  */
+  if (osi->pass != 0 || !size_unknown_p (bytes, 0))
+    bytes = size_for_offset (object_size_type, bytes, op1, wholesize);
 
   if (!size_valid_p (bytes, object_size_type)
       || !size_valid_p (wholesize, object_size_type))
     bytes = wholesize = size_unknown (object_size_type);
 
+out:
   if (object_sizes_set (osi, varno, bytes, wholesize))
     osi->changed = true;
   return reexamine;

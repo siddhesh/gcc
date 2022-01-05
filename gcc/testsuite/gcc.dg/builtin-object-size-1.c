@@ -22,6 +22,8 @@ struct A
 extern char exta[];
 extern char extb[30];
 extern struct A zerol[0];
+int off = 2;
+int off2 = -3;
 
 void
 __attribute__ ((noinline))
@@ -162,6 +164,13 @@ test1 (void *q, int x)
   if (__builtin_object_size (&extb[5], 0) != sizeof (extb) - 5)
     abort ();
 #ifdef __builtin_object_size
+  if (__builtin_object_size (&extb[off], 0) != sizeof (extb) - off)
+    abort ();
+  r = &extb[5];
+  if (__builtin_object_size (r + off, 0) != sizeof (extb) - 5 - off)
+    abort ();
+  if (__builtin_object_size (r + off2, 0) != sizeof (extb) - 5 - off2)
+    abort ();
   if (__builtin_object_size (var, 0) != x + 10)
     abort ();
   if (__builtin_object_size (var + 10, 0) != x)
@@ -169,6 +178,13 @@ test1 (void *q, int x)
   if (__builtin_object_size (&var[5], 0) != x + 5)
     abort ();
 #else
+  if (__builtin_object_size (&extb[off], 0) != sizeof (extb))
+    abort ();
+  r = &extb[5];
+  if (__builtin_object_size (r + off, 0) != sizeof (extb))
+    abort ();
+  if (__builtin_object_size (r + off2, 0) != sizeof (extb))
+    abort ();
   if (__builtin_object_size (var, 0) != (size_t) -1)
     abort ();
   if (__builtin_object_size (var + 10, 0) != (size_t) -1)

@@ -24,6 +24,9 @@ extern char extb[30];
 extern struct A extc[];
 struct A zerol[0];
 
+int off = 3;
+int off2 = -3;
+
 void
 __attribute__ ((noinline))
 test1 (void *q, int x)
@@ -151,6 +154,23 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (&extb[5], 1) != sizeof (extb) - 5)
     abort ();
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&extb[off], 1) != sizeof (extb) - off)
+    abort ();
+  r = &extb[5];
+  if (__builtin_object_size (r + off, 1) != sizeof (extb) - 5 - off)
+    abort ();
+  if (__builtin_object_size (r + off2, 0) != sizeof (extb) - 5 - off2)
+    abort ();
+#else
+  if (__builtin_object_size (&extb[off], 1) != sizeof (extb))
+    abort ();
+  r = &extb[5];
+  if (__builtin_object_size (r + off, 1) != sizeof (extb))
+    abort ();
+  if (__builtin_object_size (r + off2, 0) != sizeof (extb))
+    abort ();
+#endif
   if (__builtin_object_size (extc, 1) != (size_t) -1)
     abort ();
   if (__builtin_object_size (extc + 10, 1) != (size_t) -1)
@@ -200,6 +220,23 @@ test1 (void *q, int x)
     abort ();
   if (__builtin_object_size (&vara[7].c[7], 1) != sizeof (vara[0].c) - 7)
     abort ();
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&vara[5].c[off], 1) != sizeof (vara[0].c) - off)
+    abort ();
+  r = &vara[1].c[5];
+  if (__builtin_object_size (r + off, 1) != sizeof (vara[0].c) - 5 - off)
+    abort ();
+  if (__builtin_object_size (r + off2, 1) != sizeof (vara[0].c) - 5 - off2)
+    abort ();
+#else
+  if (__builtin_object_size (&vara[5].c[off], 1) != sizeof (vara[0].c))
+    abort ();
+  r = &vara[1].c[5];
+  if (__builtin_object_size (r + off, 1) != sizeof (vara[0].c))
+    abort ();
+  if (__builtin_object_size (r + off2, 1) != sizeof (vara[0].c))
+    abort ();
+#endif
   if (__builtin_object_size (zerol, 1) != 0)
     abort ();
   if (__builtin_object_size (&zerol, 1) != 0)
