@@ -1256,7 +1256,7 @@ static bool
 check_access (GimpleOrTree exp, tree dstwrite,
 	      tree maxread, tree srcstr, tree dstsize,
 	      access_mode mode, const access_data *pad,
-	      range_query *rvals)
+	      range_query *rvals, bool null_terminated)
 {
   /* The size of the largest object is half the address space, or
      PTRDIFF_MAX.  (This is way too permissive.)  */
@@ -1431,6 +1431,15 @@ check_access (GimpleOrTree exp, tree dstwrite,
 	}
     }
 
+  /* For functions that take string inputs and stop reading on encountering a
+     NULL, if remaining size in the source is non-zero, it is legitimate for
+     such functions to pass a larger size (that perhaps is the maximum object
+     size of all possible inputs), making the MAXREAD comparison noisy.  */
+  if (null_terminated
+      && pad && pad->mode == access_read_only
+      && pad->src.size_remaining () != 0)
+    return true;
+
   /* Check the maximum length of the source sequence against the size
      of the destination object if known, or against the maximum size
      of an object.  */
@@ -1522,10 +1531,10 @@ static bool
 check_access (gimple *stmt, tree dstwrite,
 	      tree maxread, tree srcstr, tree dstsize,
 	      access_mode mode, const access_data *pad,
-	      range_query *rvals)
+	      range_query *rvals, bool null_terminated = true)
 {
   return check_access<gimple *> (stmt, dstwrite, maxread, srcstr, dstsize,
-				 mode, pad, rvals);
+				 mode, pad, rvals, null_terminated);
 }
 
 bool
@@ -1534,7 +1543,7 @@ check_access (tree expr, tree dstwrite,
 	      access_mode mode, const access_data *pad /* = NULL */)
 {
   return check_access<tree> (expr, dstwrite, maxread, srcstr, dstsize,
-			     mode, pad, nullptr);
+			     mode, pad, nullptr, true);
 }
 
 /* Return true if STMT is a call to an allocation function.  Unless
@@ -2109,7 +2118,8 @@ private:
   void check_stxncpy (gcall *);
   void check_strncmp (gcall *);
   void check_memop_access (gimple *, tree, tree, tree);
-  void check_read_access (gimple *, tree, tree = NULL_TREE, int = 1);
+  void check_read_access (gimple *, tree, tree = NULL_TREE, int = 1,
+			  bool = true);
 
   void maybe_check_dealloc_call (gcall *);
   void maybe_check_access_sizes (rdwr_map *, tree, tree, gimple *);
@@ -2743,7 +2753,7 @@ pass_waccess::check_memop_access (gimple *stmt, tree dest, tree src, tree size)
   tree dstsize = compute_objsize (dest, stmt, 0, &data.dst, &m_ptr_qry);
 
   check_access (stmt, size, /*maxread=*/NULL_TREE, srcsize, dstsize,
-		data.mode, &data, m_ptr_qry.rvals);
+		data.mode, &data, m_ptr_qry.rvals, false);
 }
 
 /* A convenience wrapper for check_access to check access by a read-only
@@ -2752,7 +2762,8 @@ pass_waccess::check_memop_access (gimple *stmt, tree dest, tree src, tree size)
 void
 pass_waccess::check_read_access (gimple *stmt, tree src,
 				 tree bound /* = NULL_TREE */,
-				 int ost /* = 1 */)
+				 int ost /* = 1 */,
+				 bool null_terminated /* = true */)
 {
   if (m_early_checks_p || !warn_stringop_overread)
     return;
@@ -2768,7 +2779,7 @@ pass_waccess::check_read_access (gimple *stmt, tree src,
   compute_objsize (src, stmt, ost, &data.src, &m_ptr_qry);
   check_access (stmt, /*dstwrite=*/ NULL_TREE, /*maxread=*/ bound,
 		/*srcstr=*/ src, /*dstsize=*/ NULL_TREE, data.mode,
-		&data, m_ptr_qry.rvals);
+		&data, m_ptr_qry.rvals, null_terminated);
 }
 
 /* Return true if memory model ORD is constant in the context of STMT and
@@ -3228,8 +3239,8 @@ pass_waccess::check_builtin (gcall *stmt)
 	tree a1 = call_arg (stmt, 0);
 	tree a2 = call_arg (stmt, 1);
 	tree len = call_arg (stmt, 2);
-	check_read_access (stmt, a1, len, 0);
-	check_read_access (stmt, a2, len, 0);
+	check_read_access (stmt, a1, len, 0, false);
+	check_read_access (stmt, a2, len, 0, false);
 	return true;
       }
 
@@ -3248,7 +3259,7 @@ pass_waccess::check_builtin (gcall *stmt)
       {
 	tree src = call_arg (stmt, 0);
 	tree len = call_arg (stmt, 2);
-	check_read_access (stmt, src, len, 0);
+	check_read_access (stmt, src, len, 0, false);
 	return true;
       }
 
@@ -3544,7 +3555,7 @@ pass_waccess::maybe_check_access_sizes (rdwr_map *rwm, tree fndecl, tree fntype,
       if (mode == access_deferred)
 	mode = TYPE_READONLY (argtype) ? access_read_only : access_read_write;
       check_access (stmt, access_size, /*maxread=*/ NULL_TREE, srcsize,
-		    dstsize, mode, &data, m_ptr_qry.rvals);
+		    dstsize, mode, &data, m_ptr_qry.rvals, false);
 
       if (warning_suppressed_p (stmt, OPT_Wstringop_overflow_))
 	opt_warned = OPT_Wstringop_overflow_;

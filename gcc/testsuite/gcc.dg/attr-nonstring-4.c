@@ -53,7 +53,7 @@ void strnlen_range (void)
   T (STR, /* [] */, n);
   T (STR, /* [] */, n + 1);    /* { dg-warning "specified bound \\\[\[0-9\]+, \[0-9\]+] exceeds maximum object size \[0-9\]+" } */
 
-  T (STR, 1, n);               /* { dg-warning "specified bound \\\[\[0-9\]+, \[0-9\]+] exceeds source size 1" } */
+  T (STR, 1, n);
   T (STR, 2, n + 1);           /* { dg-warning "specified bound \\\[\[0-9\]+, \[0-9\]+] exceeds maximum object size \[0-9\]+" } */
 
   T (NS, /* [] */, n);

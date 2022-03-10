@@ -147,11 +147,11 @@ T (v0 ? b[3] : "", bsz);
    the strnlen calls are safe because the reads are bounded by
    the length of the constant arguments.  Most of the calls are
    not diagnosed anymore as a result of the fix for PR 103215.  */
-T (v0 ? "" : b[0], bsz + 1);      /* { dg-warning "bound 6 exceeds source size 5" } */
+T (v0 ? "" : b[0], bsz + 1);
 T (v0 ? "" : b[1], bsz + 1);
 T (v0 ? "" : b[2], bsz + 1);
 T (v0 ? "" : b[3], bsz + 1);
-T (v0 ? b[0] : "", bsz + 1);      /* { dg-warning "bound 6 exceeds source size 5" } */
+T (v0 ? b[0] : "", bsz + 1);
 T (v0 ? b[1] : "", bsz + 1);
 T (v0 ? b[2] : "", bsz + 1);
 T (v0 ? b[3] : "", bsz + 1);
@@ -218,10 +218,10 @@ T (&s.a[i1] + v0, asz);
 T (s.a, asz + 1);
 T (&s.a[0], asz + 1);
 T (&s.a[0] + 1, asz + 1);
-T (&s.a[0] + v0, asz + 1);        /* { dg-warning "specified bound 6 exceeds source size 5 " } */
+T (&s.a[0] + v0, asz + 1);
 T (&s.a[1], asz + 1);
 T (&s.a[1] + 1, asz + 1);
-T (&s.a[1] + v0, asz + 1);        /* { dg-bogus "specified bound 6 exceeds source size 5" "pr95794" { xfail *-*-* } } */
+T (&s.a[1] + v0, asz + 1);
 
 T (&s.a[i0], asz + 1);
 T (&s.a[i0] + i1, asz + 1);
@@ -272,10 +272,10 @@ const struct B ba[] = {
 T (ba[0].a[0].a, asz + 1);
 T (&ba[0].a[0].a[0], asz + 1);
 T (&ba[0].a[0].a[0] + 1, asz + 1);
-T (&ba[0].a[0].a[0] + v0, asz + 1);   /* { dg-bogus "specified bound 6 exceeds source size 5" pr95794" { xfail *-*-* } } */
+T (&ba[0].a[0].a[0] + v0, asz + 1);
 T (&ba[0].a[0].a[1], asz + 1);
 T (&ba[0].a[0].a[1] + 1, asz + 1);
-T (&ba[0].a[0].a[1] + v0, asz + 1);   /* { dg-bogus "specified bound 6 exceeds source size 5" pr95794" { xfail *-*-* } } */
+T (&ba[0].a[0].a[1] + v0, asz + 1);
 
 T (ba[0].a[0].b, bsz);
 T (&ba[0].a[0].b[0], bsz);
@@ -308,10 +308,10 @@ T (&ba[0].a[1].a[1] + v0, asz + 1);   /* { dg-warning "unterminated" } */
 T (ba[0].a[1].b, bsz + 1);
 T (&ba[0].a[1].b[0], bsz + 1);
 T (&ba[0].a[1].b[0] + 1, bsz + 1);
-T (&ba[0].a[1].b[0] + v0, bsz + 1);   /* { dg-bogus "specified bound 6 exceeds source size 5" pr95794" { xfail *-*-* } } */
+T (&ba[0].a[1].b[0] + v0, bsz + 1);
 T (&ba[0].a[1].b[1], bsz + 1);
 T (&ba[0].a[1].b[1] + 1, bsz + 1);
-T (&ba[0].a[1].b[1] + v0, bsz + 1);   /* { dg-bogus "specified bound 6 exceeds source size 5" pr95794" { xfail *-*-* } } */
+T (&ba[0].a[1].b[1] + v0, bsz + 1);
 
 T (ba[1].a[0].a, asz);
 T (&ba[1].a[0].a[0], asz);

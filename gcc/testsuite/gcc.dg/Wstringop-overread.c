@@ -313,7 +313,7 @@ void test_strnlen_array (int i, int i0, unsigned n)
 
   T (strnlen (a1, 0));
   T (strnlen (a1, 1));
-  T (strnlen (a1, 2));          // { dg-warning "'strnlen' specified bound 2 exceeds source size 1" "pr87492" { xfail *-*-* } }
+  T (strnlen (a1, 2));
   T (strnlen (a1, n));
 
   T (strnlen (a1 + 1, 0));
@@ -323,16 +323,16 @@ void test_strnlen_array (int i, int i0, unsigned n)
   T (strnlen (a1 + 1, n));
   T (strnlen (a1 + i, 0));
   T (strnlen (a1 + i, 1));
-  T (strnlen (a1 + i, 2));      // { dg-warning "'strnlen' specified bound 2 exceeds source size 1" }
+  T (strnlen (a1 + i, 2));
   T (strnlen (a1 + i, n));
   T (strnlen (a1 + i + 1, 0));
   T (strnlen (a1 + i + 1, 1));
-  T (strnlen (a1 + i + 1, 2));  // { dg-warning "'strnlen' specified bound 2 exceeds source size 1" }
+  T (strnlen (a1 + i + 1, 2));
   T (strnlen (a1 + i + 1, n));
 
   T (strnlen (a1 + i0, 0));
   T (strnlen (a1 + i0, 1));
-  T (strnlen (a1 + i0, 2));     // { dg-warning "'strnlen' specified bound 2 exceeds source size 1" }
+  T (strnlen (a1 + i0, 2));
   T (strnlen (a1 + i0, n));
   T (strnlen (a1 + i0 + 1, 0));
   T (strnlen (a1 + i0 + 1, 1)); // { dg-warning "'strnlen' specified bound 1 exceeds source size 0" }
@@ -344,7 +344,7 @@ void test_strnlen_array (int i, int i0, unsigned n)
   T (strnlen (a2, n));
   T (strnlen (a2 + 1, 0));
   T (strnlen (a2 + 1, 1));
-  T (strnlen (a2 + 1, 2));      // { dg-warning "'strnlen' specified bound 2 exceeds source size 1"  "pr87492" }
+  T (strnlen (a2 + 1, 2));
   T (strnlen (a2 + 1, n));
   T (strnlen (a2 + 2, 0));
   T (strnlen (a2 + 2, 1));      // { dg-warning "'strnlen' specified bound 1 exceeds source size 0" }
@@ -360,12 +360,12 @@ void test_strnlen_array (int i, int i0, unsigned n)
   T (strnlen (a2 + i0, 0));
   T (strnlen (a2 + i0, 1));
   T (strnlen (a2 + i0, 2));
-  T (strnlen (a2 + i0, 3));     // { dg-warning "'strnlen' specified bound 3 exceeds source size 2" }
+  T (strnlen (a2 + i0, 3));
   T (strnlen (a2 + i0, n));
 
   T (strnlen (a2 + i0 + 1, 0));
   T (strnlen (a2 + i0 + 1, 1));
-  T (strnlen (a2 + i0 + 1, 2)); // { dg-warning "'strnlen' specified bound 2 exceeds source size 1" }
+  T (strnlen (a2 + i0 + 1, 2));
   T (strnlen (a2 + i0 + 1, n));
 
   T (strnlen (a2 + i0 + 2, 0));
@@ -509,7 +509,7 @@ void test_strndup_array (int i, int i0, unsigned n)
 
   T (strndup (a1, 0));
   T (strndup (a1, 1));
-  T (strndup (a1, 2));          // { dg-warning "'strndup' specified bound 2 exceeds source size 1" }
+  T (strndup (a1, 2));
   T (strndup (a1, n));
   T (strndup (a1 + 1, 0));
   T (strndup (a1 + 1, 1));      // { dg-warning "'strndup' specified bound 1 exceeds source size 0" }
@@ -518,11 +518,11 @@ void test_strndup_array (int i, int i0, unsigned n)
   T (strndup (a1 + 1, n));
   T (strndup (a1 + i, 0));
   T (strndup (a1 + i, 1));
-  T (strndup (a1 + i, 2));      // { dg-warning "'strndup' specified bound 2 exceeds source size 1" }
+  T (strndup (a1 + i, 2));
   T (strndup (a1 + i, n));
   T (strndup (a1 + i + 1, 0));
   T (strndup (a1 + i + 1, 1));
-  T (strndup (a1 + i + 1, 2));  // { dg-warning "'strndup' specified bound 2 exceeds source size 1" }
+  T (strndup (a1 + i + 1, 2));
   T (strndup (a1 + i + 1, n));
 
   T (strndup (a1 + i0, 0));
@@ -538,7 +538,7 @@ void test_strndup_array (int i, int i0, unsigned n)
   T (strndup (a2, n));
   T (strndup (a2 + 1, 0));
   T (strndup (a2 + 1, 1));
-  T (strndup (a2 + 1, 2));      // { dg-warning "'strndup' specified bound 2 exceeds source size 1" }
+  T (strndup (a2 + 1, 2));
   T (strndup (a2 + 1, n));
   T (strndup (a2 + 2, 0));
   T (strndup (a2 + 2, 1));      // { dg-warning "'strndup' specified bound 1 exceeds source size 0" }
@@ -554,12 +554,12 @@ void test_strndup_array (int i, int i0, unsigned n)
   T (strndup (a2 + i0, 0));
   T (strndup (a2 + i0, 1));
   T (strndup (a2 + i0, 2));
-  T (strndup (a2 + i0, 3));     // { dg-warning "'strndup' specified bound 3 exceeds source size 2" }
+  T (strndup (a2 + i0, 3));
   T (strndup (a2 + i0, n));
 
   T (strndup (a2 + i0 + 1, 0));
   T (strndup (a2 + i0 + 1, 1));
-  T (strndup (a2 + i0 + 1, 2)); // { dg-warning "'strndup' specified bound 2 exceeds source size 1" }
+  T (strndup (a2 + i0 + 1, 2));
   T (strndup (a2 + i0 + 1, n));
 
   T (strndup (a2 + i0 + 2, 0));
