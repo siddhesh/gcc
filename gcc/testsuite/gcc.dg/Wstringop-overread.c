@@ -431,7 +431,7 @@ void test_strncmp_array (const char *s, int i)
 
   T (strncmp (a1, b1, 0));
   T (strncmp (a1, b1, 1));
-  T (strncmp (a1, b1, 2));      // { dg-warning "'strncmp' specified bound 2 exceeds source size 1" }
+  T (strncmp (a1, b1, 2));
 }
 
 

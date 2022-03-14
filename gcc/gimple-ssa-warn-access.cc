@@ -2137,6 +2137,9 @@ private:
   /* Return true if use follows an invalidating statement.  */
   bool use_after_inval_p (gimple *, gimple *, bool = false);
 
+  /* Emit an overread warning for zero sized inputs to strncmp.  */
+  void warn_zero_sized_strncmp_inputs (gimple *, tree *, access_data *);
+
   /* A pointer_query object to store information about pointers and
      their targets in.  */
   pointer_query m_ptr_qry;
@@ -2619,8 +2622,20 @@ pass_waccess::check_stxncpy (gcall *stmt)
 		data.mode, &data, m_ptr_qry.rvals);
 }
 
-/* Check a call STMT to stpncpy() or strncpy() for overflow and warn
-   if it does.  */
+/* Warn for strncmp on a zero sized source or when an argument isn't
+   nul-terminated.  */
+void
+pass_waccess::warn_zero_sized_strncmp_inputs (gimple *stmt, tree *bndrng,
+					      access_data *pad)
+{
+  tree func = get_callee_fndecl (stmt);
+  location_t loc = gimple_location (stmt);
+  maybe_warn_for_bound (OPT_Wstringop_overread, loc, stmt, func, bndrng,
+			size_zero_node, pad);
+}
+
+/* Check a call STMT to strncmp () for overflow and warn if it does.  This is
+   limited to checking for NUL terminated arrays for now.  */
 
 void
 pass_waccess::check_strncmp (gcall *stmt)
@@ -2678,46 +2693,16 @@ pass_waccess::check_strncmp (gcall *stmt)
   if (!bndrng[0] || integer_zerop (bndrng[0]))
     return;
 
-  if (len1 && tree_int_cst_lt (len1, bndrng[0]))
-    bndrng[0] = len1;
-  if (len2 && tree_int_cst_lt (len2, bndrng[0]))
-    bndrng[0] = len2;
-
-  /* compute_objsize almost never fails (and ultimately should never
-     fail).  Don't bother to handle the rare case when it does.  */
-  if (!compute_objsize (arg1, stmt, 1, &adata1.src, &m_ptr_qry)
-      || !compute_objsize (arg2, stmt, 1, &adata2.src, &m_ptr_qry))
-    return;
-
-  /* Compute the size of the remaining space in each array after
-     subtracting any offset into it.  */
-  offset_int rem1 = adata1.src.size_remaining ();
-  offset_int rem2 = adata2.src.size_remaining ();
-
-  /* Cap REM1 and REM2 at the other if the other's argument is known
-     to be an unterminated array, either because there's no space
-     left in it after adding its offset or because it's constant and
-     has no nul.  */
-  if (rem1 == 0 || (rem1 < rem2 && lendata1.decl))
-    rem2 = rem1;
-  else if (rem2 == 0 || (rem2 < rem1 && lendata2.decl))
-    rem1 = rem2;
-
-  /* Point PAD at the array to reference in the note if a warning
-     is issued.  */
-  access_data *pad = len1 ? &adata2 : &adata1;
-  offset_int maxrem = wi::max (rem1, rem2, UNSIGNED);
-  if (lendata1.decl || lendata2.decl
-      || maxrem < wi::to_offset (bndrng[0]))
-    {
-      /* Warn when either argument isn't nul-terminated or the maximum
-	 remaining space in the two arrays is less than the bound.  */
-      tree func = get_callee_fndecl (stmt);
-      location_t loc = gimple_location (stmt);
-      maybe_warn_for_bound (OPT_Wstringop_overread, loc, stmt, func,
-			    bndrng, wide_int_to_tree (sizetype, maxrem),
-			    pad);
-    }
+  /* compute_objsize almost never fails (and ultimately should never fail).
+     Don't bother to handle the rare case when it does.  Warn if either the
+     source or destination has zero size, since the minimum bound is non-zero,
+     hence guaranteeing an overread.  */
+  if (compute_objsize (arg1, stmt, 1, &adata1.src, &m_ptr_qry)
+      && adata1.src.size_remaining () == 0)
+    warn_zero_sized_strncmp_inputs (stmt, bndrng, &adata1);
+  if (compute_objsize (arg2, stmt, 1, &adata2.src, &m_ptr_qry)
+      && adata2.src.size_remaining () == 0)
+    warn_zero_sized_strncmp_inputs (stmt, bndrng, &adata2);
 }
 
 /* Determine and check the sizes of the source and the destination
