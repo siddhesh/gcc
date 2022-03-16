@@ -372,7 +372,7 @@ size_for_offset (tree sz, tree offset, tree wholesize = NULL_TREE)
 
   /* Safe to convert now, since a valid net offset should be non-negative.  */
   if (!types_compatible_p (TREE_TYPE (offset), sizetype))
-    fold_convert (sizetype, offset);
+    offset = fold_convert (sizetype, offset);
 
   if (TREE_CODE (offset) == INTEGER_CST)
     {
