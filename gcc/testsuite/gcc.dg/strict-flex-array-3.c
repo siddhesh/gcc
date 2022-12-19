@@ -4,16 +4,17 @@
 /* { dg-do run } */
 /* { dg-options "-O2 -fstrict-flex-arrays=0" } */
 
-#include <stdio.h>
+#include "builtin-object-size-common.h"
 
+typedef __SIZE_TYPE__ size_t;
 #define expect(p, _v) do { \
     size_t v = _v; \
     if (p == v) \
-        printf("ok:  %s == %zd\n", #p, p); \
+        __builtin_printf ("ok:  %s == %zd\n", #p, p); \
     else \
 	{  \
-          printf("WAT: %s == %zd (expected %zd)\n", #p, p, v); \
-	  __builtin_abort (); \
+          __builtin_printf ("WAT: %s == %zd (expected %zd)\n", #p, p, v); \
+	  FAIL (); \
 	} \
 } while (0);
 
@@ -56,5 +57,5 @@ int main(int argc, char *argv[])
 {
     stuff((void *)argv[0], (void *)argv[0], (void *)argv[0], (void *)argv[0]);
 
-    return 0;
+    DONE ();
 }

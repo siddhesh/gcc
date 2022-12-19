@@ -1,10 +1,11 @@
 /* { dg-do run } */
 /* { dg-options "-O2" } */
 
+#include "builtin-object-size-common.h"
+
 typedef __SIZE_TYPE__ size_t;
 extern void *malloc (size_t);
 extern void free (void *);
-extern void abort (void);
 
 union A
 {
@@ -56,13 +57,13 @@ struct H
 
 #define T(X, S0, S1) \
   if (__builtin_object_size (X, 0) != (S0))	\
-    abort ();					\
+    FAIL ();					\
   if (__builtin_object_size (X, 1) != (S1))	\
-    abort ();					\
+    FAIL ();					\
   if (__builtin_object_size (X, 2) != (S0))	\
-    abort ();					\
+    FAIL ();					\
   if (__builtin_object_size (X, 3) != (S1))	\
-    abort ()
+    FAIL ()
 #define TS(X, S0) T(&X, S0, sizeof (X))
 #define TA(X, S0, S1) \
   T(X, S0, S1); T(&X[0], S0, S1); T(&X[1], (S0) - 1, (S1) - 1)
@@ -347,5 +348,5 @@ main (void)
   free (h2);
   free (h1);
 
-  return 0;
+  DONE ();
 }
