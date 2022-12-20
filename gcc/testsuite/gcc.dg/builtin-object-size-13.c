@@ -332,9 +332,9 @@ main (void)
   o2 = __builtin_offsetof (struct H, h2.e1.c2);
   h1 = malloc (s);
   h2 = malloc (o2 + 212);
-  TA (h1->h2.e1.c2.a2, s - o2, sizeof (h1->h2.e1.c2.a2));
+  TA (h1->h2.e1.c2.a2, s - o2, s - o2);
   s = o2 + 212;
-  TA (h2->h2.e1.c2.a2, s - o2, sizeof (h2->h2.e1.c2.a2));
+  TA (h2->h2.e1.c2.a2, s - o2, s - o2);
   free (h2);
   free (h1);
   s = sizeof (struct H);

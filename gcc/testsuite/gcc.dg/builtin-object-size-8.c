@@ -186,13 +186,13 @@ main (void)
   TS (h1->h1, s);
   TS (h1->h2.e1.c1, s - o);
   TS (h1->h2.e1.c2.a1, s - o2);
-  TA (h1->h2.e1.c2.a2, s - o2, sizeof (h1->h2.e1.c2.a2));
+  TA (h1->h2.e1.c2.a2, s - o2, s - o2);
   TF (h1->h2.e2, s - o);
   s = o2 + 212;
   TS (h2->h1, s);
   TS (h2->h2.e1.c1, s - o);
   TS (h2->h2.e1.c2.a1, s - o2);
-  TA (h2->h2.e1.c2.a2, s - o2, sizeof (h2->h2.e1.c2.a2));
+  TA (h2->h2.e1.c2.a2, s - o2, s - o2);
   TF (h2->h2.e2, s - o);
   free (h2);
   free (h1);

@@ -103,7 +103,7 @@ test1 (struct A *p)
     FAIL ();
   if (__builtin_object_size (&p->b, 3) != sizeof (p->b))
     FAIL ();
-  if (__builtin_object_size (&p->c, 3) != 0)
+  if (__builtin_object_size (&p->c, 3) != 10)
     FAIL ();
   c = p->a;
   if (__builtin_object_size (c, 3) != sizeof (p->a))
@@ -118,7 +118,7 @@ test1 (struct A *p)
   if (__builtin_object_size (c, 3) != sizeof (p->b))
     FAIL ();
   c = (char *) &p->c;
-  if (__builtin_object_size (c, 3) != 0)
+  if (__builtin_object_size (c, 3) != 10)
     FAIL ();
 }
 
@@ -344,7 +344,7 @@ test6 (struct D *d)
 {
   if (__builtin_object_size (&d->j.a[3], 0) != (size_t) -1)
     FAIL ();
-  if (__builtin_object_size (&d->j.a[3], 1) != sizeof (d->j.a) - 3)
+  if (__builtin_object_size (&d->j.a[3], 1) != -1)
     FAIL ();
   if (__builtin_object_size (&d->j.a[3], 2) != 0)
     FAIL ();
@@ -380,7 +380,7 @@ test7 (struct E *e)
     FAIL ();
   if (__builtin_object_size ((char *) &e->j[0], 2) != 0)
     FAIL ();
-  if (__builtin_object_size ((char *) &e->j[0], 3) != 0)
+  if (__builtin_object_size ((char *) &e->j[0], 3) != sizeof (e->j))
     FAIL ();
 }
 
@@ -404,7 +404,7 @@ test8 (union F *f)
     FAIL ();
   if (__builtin_object_size (&f->d.c[3], 2) != 0)
     FAIL ();
-  if (__builtin_object_size (&f->d.c[3], 3) != 0)
+  if (__builtin_object_size (&f->d.c[3], 3) != 7)
     FAIL ();
 }
 
