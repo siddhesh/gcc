@@ -499,29 +499,17 @@ decl_init_size (tree decl, bool min)
   return size;
 }
 
-static tree
-size_for_var (const_tree ptr, tree var, tree var_size, tree pt_var,
-	      tree pt_var_size, int object_size_type)
-{
-  tree bytes = compute_object_offset (TREE_OPERAND (ptr, 0), var);
+/* Return the size of SUBOBJ that is within VAR where the latter has VAR_SIZE
+   size.  */
 
-  if (bytes != error_mark_node)
-    {
-      bytes = size_for_offset (var_size, bytes);
-      if (var != pt_var && pt_var_size && TREE_CODE (pt_var) == MEM_REF)
-	{
-	  tree bytes2 = compute_object_offset (TREE_OPERAND (ptr, 0),
-					       pt_var);
-	  if (bytes2 != error_mark_node)
-	    {
-	      bytes2 = size_for_offset (pt_var_size, bytes2);
-	      bytes = size_binop (MIN_EXPR, bytes, bytes2);
-	    }
-	}
-    }
-  else
-    bytes = size_unknown (object_size_type);
-  return bytes;
+static tree
+size_from_objects (const_tree subobj, const_tree var, tree var_size,
+		   int object_size_type)
+{
+  tree bytes = compute_object_offset (subobj, var);
+
+  return (bytes != error_mark_node ? size_for_offset (var_size, bytes)
+	  : size_unknown (object_size_type));
 }
 
 /* Compute __builtin_object_size for PTR, which is a ADDR_EXPR.
@@ -609,82 +597,57 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
   if (pt_var != TREE_OPERAND (ptr, 0))
     {
       tree var;
-      bool has_flexible_array_mem_ref = false;
 
       if (object_size_type & OST_SUBOBJECT)
 	{
 	  var = TREE_OPERAND (ptr, 0);
 
+	  /* Get the immediate containing subobject.  Skip over conversions
+	     because we don't need them.  */
 	  while (var != pt_var
-		 && TREE_CODE (var) != BIT_FIELD_REF
-		 && TREE_CODE (var) != COMPONENT_REF
-		 && TREE_CODE (var) != ARRAY_REF
-		 && TREE_CODE (var) != ARRAY_RANGE_REF
-		 && TREE_CODE (var) != REALPART_EXPR
-		 && TREE_CODE (var) != IMAGPART_EXPR)
+		 && (!handled_component_p (var)
+		     || TREE_CODE (var) == VIEW_CONVERT_EXPR))
 	    var = TREE_OPERAND (var, 0);
 	  if (var != pt_var && TREE_CODE (var) == ARRAY_REF)
 	    var = TREE_OPERAND (var, 0);
+
+	  /* If the subobject size cannot be easily inferred or is smaller than
+	     the whole size, just use the whole size.  */
 	  if (! TYPE_SIZE_UNIT (TREE_TYPE (var))
 	      || ! tree_fits_uhwi_p (TYPE_SIZE_UNIT (TREE_TYPE (var)))
 	      || (pt_var_size && TREE_CODE (pt_var_size) == INTEGER_CST
 		  && tree_int_cst_lt (pt_var_size,
 				      TYPE_SIZE_UNIT (TREE_TYPE (var)))))
 	    var = pt_var;
-	  else if (var != pt_var && TREE_CODE (pt_var) == MEM_REF)
-	    {
-	      tree v = var;
-	      /* Find if there is a flexible array member in the chain.  */
-	      while (v && v != pt_var)
-		switch (TREE_CODE (v))
-		  {
-		  case ARRAY_REF:
-		    if (TYPE_SIZE_UNIT (TREE_TYPE (TREE_OPERAND (v, 0))))
-		      {
-			tree domain
-			  = TYPE_DOMAIN (TREE_TYPE (TREE_OPERAND (v, 0)));
-			if (domain && TYPE_MAX_VALUE (domain))
-			  {
-			    v = NULL_TREE;
-			    break;
-			  }
-		      }
-		    v = TREE_OPERAND (v, 0);
-		    break;
-		  case REALPART_EXPR:
-		  case IMAGPART_EXPR:
-		    v = NULL_TREE;
-		    break;
-		  case COMPONENT_REF:
-		    if (TREE_CODE (TREE_TYPE (v)) == ARRAY_TYPE)
-		      has_flexible_array_mem_ref
-			= array_ref_flexible_size_p (v);
-		    v = NULL_TREE;
-		    break;
-		  default:
-		    v = TREE_OPERAND (v, 0);
-		    break;
-		  }
-	      if (v == pt_var)
-		var = pt_var;
-	    }
 	}
       else
 	var = pt_var;
 
-      /* For objects with flex array members, we need the whole size to get the
-	 maximum estimate, see below.  The minimum estimate could be the
-	 subscript (or 0 for true C99 flex arrays), so we don't necessarily
-	 need the whole size to get an actual result OST_MINIMUM.  */
-      if (has_flexible_array_mem_ref && !pt_var_size
+      bool is_flexible_array_mem_ref = false;
+      /* Find out if this is a flexible array.  This will change
+	 according to -fstrict-flex-arrays.  */
+      if (var != pt_var && TREE_CODE (pt_var) == MEM_REF)
+	is_flexible_array_mem_ref = array_ref_flexible_size_p (var);
+
+      /* We cannot get a maximum estimate for a flex array without the
+	 whole object size.  */
+      if (is_flexible_array_mem_ref && !pt_var_size
 	  && !(object_size_type & OST_MINIMUM))
 	return false;
 
       if (var != pt_var)
 	{
-	  var_size = TYPE_SIZE_UNIT (TREE_TYPE (var));
-	  if (!TREE_CONSTANT (var_size))
-	    var_size = get_or_create_ssa_default_def (cfun, var_size);
+	  /* For flexible arrays, we prefer the size based on the whole object
+	     if it is available.  */
+	  if (is_flexible_array_mem_ref && pt_var_size)
+	    var_size = size_from_objects (var, pt_var, pt_var_size,
+					  object_size_type);
+	  else
+	    {
+	      var_size = TYPE_SIZE_UNIT (TREE_TYPE (var));
+	      if (!TREE_CONSTANT (var_size))
+		var_size = get_or_create_ssa_default_def (cfun, var_size);
+	    }
 	  if (!var_size)
 	    return false;
 	}
@@ -693,19 +656,15 @@ addr_object_size (struct object_size_info *osi, const_tree ptr,
       else
 	var_size = pt_var_size;
 
-      bytes = size_for_var (ptr, var, var_size, pt_var, pt_var_size,
-			    object_size_type);
+      bytes = size_from_objects (TREE_OPERAND (ptr, 0), var, var_size,
+				 object_size_type);
 
-      /* The size estimate for an object with a trailing flexible array is the
-	 maximum of whatever it got allocated (through, possibly, a malloc) and
-	 the default space it got through the struct declaration.  */
-      if (has_flexible_array_mem_ref && pt_var_size)
+      if (var != pt_var && pt_var_size && TREE_CODE (pt_var) == MEM_REF
+	  && !is_flexible_array_mem_ref)
 	{
-	  bytes = fold_build2 (MAX_EXPR, sizetype, bytes,
-			       size_for_var (ptr, pt_var, pt_var_size, pt_var,
-					     pt_var_size, object_size_type));
-
-	  var_size = fold_build2 (MAX_EXPR, sizetype, bytes, var_size);
+	  tree bytes2 = size_from_objects (TREE_OPERAND (ptr, 0), pt_var,
+					   pt_var_size, object_size_type);
+	  bytes = size_binop (MIN_EXPR, bytes, bytes2);
 	}
 
       wholebytes
