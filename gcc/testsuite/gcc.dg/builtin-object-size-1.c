@@ -712,6 +712,43 @@ test11 (void)
 }
 #endif
 
+void
+__attribute__ ((noinline))
+test12 (unsigned cond)
+{
+  char *buf2 = malloc (10);
+  char *p;
+  size_t t;
+
+  if (cond)
+    t = 8;
+  else
+    t = 4;
+
+  p = &buf2[t];
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (p, 0) != (cond ? 2 : 6))
+    FAIL ();
+#else
+  if (__builtin_object_size (p, 0) != 6)
+    FAIL ();
+#endif
+
+  if (cond)
+    t = -2;
+  else
+    t = -4;
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&p[t], 0) != (cond ? 4 : 10))
+    FAIL ();
+#else
+  if (__builtin_object_size (&p[t], 0) != 10)
+    FAIL ();
+#endif
+}
+
 int
 main (void)
 {
@@ -729,6 +766,7 @@ main (void)
   test10 ();
 #ifndef SKIP_STRNDUP
   test11 ();
+  test12 (1);
 #endif
   DONE ();
 }
