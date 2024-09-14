@@ -720,6 +720,65 @@ test11 (void)
 }
 #endif
 
+void
+__attribute__ ((noinline))
+test12 (unsigned cond)
+{
+  char *buf2 = malloc (10);
+  char *p;
+  size_t t;
+
+  if (cond)
+    t = 8;
+  else
+    t = 4;
+
+  p = &buf2[t];
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (p, 2) != (cond ? 2 : 6))
+    FAIL ();
+#else
+  if (__builtin_object_size (p, 2) != 2)
+    FAIL ();
+#endif
+}
+
+void
+__attribute__ ((noinline))
+test13 (unsigned cond)
+{
+  char *buf2 = malloc (10);
+  char *p = &buf2[4];
+  size_t t;
+
+  if (cond)
+    t = -1;
+  else
+    t = -2;
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&p[t], 2) != (cond ? 7 : 8))
+    FAIL ();
+#else
+  if (__builtin_object_size (&p[t], 2) != 7)
+    FAIL ();
+#endif
+
+  if (cond)
+    t = 1;
+  else
+    t = -3;
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&p[t], 2) != (cond ? 5 : 9))
+    FAIL ();
+#else
+  if (__builtin_object_size (&p[t], 2) != 5)
+    FAIL ();
+#endif
+}
+
 int
 main (void)
 {
@@ -738,5 +797,9 @@ main (void)
 #ifndef SKIP_STRNDUP
   test11 ();
 #endif
+  test12 (1);
+  test12 (0);
+  test13 (1);
+  test13 (0);
   DONE ();
 }

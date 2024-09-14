@@ -1468,6 +1468,63 @@ merge_object_sizes (struct object_size_info *osi, tree dest, tree orig)
   return bitmap_bit_p (osi->reexamine, SSA_NAME_VERSION (orig));
 }
 
+/* For constant sizes, try collapsing a non-constant offset to a constant if
+   possible.  The case handled at the moment is when the offset is a PHI node
+   with all of its targets are constants.  */
+
+static tree
+try_collapsing_offset (tree op, int object_size_type)
+{
+  gcc_assert (!(object_size_type & OST_DYNAMIC));
+
+  if (TREE_CODE (op) != SSA_NAME)
+    return op;
+
+  gimple *stmt = SSA_NAME_DEF_STMT (op);
+
+  switch (gimple_code (stmt))
+    {
+    case GIMPLE_ASSIGN:
+      /* Peek through casts.  */
+      if (gimple_assign_rhs_code (stmt) == NOP_EXPR)
+	{
+	  tree ret = try_collapsing_offset (gimple_assign_rhs1 (stmt),
+					    object_size_type);
+	  if (TREE_CODE (ret) == INTEGER_CST)
+	    return ret;
+	}
+      break;
+    case GIMPLE_PHI:
+	{
+	  tree off = ((object_size_type & OST_MINIMUM)
+		      ? TYPE_MIN_VALUE (ptrdiff_type_node)
+		      : TYPE_MAX_VALUE (ptrdiff_type_node));
+
+	  for (unsigned i = 0; i < gimple_phi_num_args (stmt); i++)
+	    {
+	      tree rhs = gimple_phi_arg_def (stmt, i);
+
+	      if (TREE_CODE (rhs) != INTEGER_CST)
+		return op;
+
+	      /* Note that this is the *opposite* of what we usually do with
+		 sizes, because the maximum offset estimate here will give us a
+		 minimum size estimate and vice versa.  */
+	      enum tree_code code = (object_size_type & OST_MINIMUM
+				     ? MAX_EXPR : MIN_EXPR);
+
+	      off = fold_build2 (code, ptrdiff_type_node, off,
+				 fold_convert (ptrdiff_type_node, rhs));
+	    }
+	  return fold_convert (sizetype, off);
+	}
+    default:
+      break;
+    }
+
+  /* Nothing worked, so return OP untouched.  */
+  return op;
+}
 
 /* Compute object_sizes for VAR, defined to the result of an assignment
    with operator POINTER_PLUS_EXPR.  Return true if the object size might
@@ -1499,6 +1556,9 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
 
   if (object_sizes_unknown_p (object_size_type, varno))
     return false;
+
+  if (!(object_size_type & OST_DYNAMIC) && TREE_CODE (op1) != INTEGER_CST)
+    op1 = try_collapsing_offset (op1, object_size_type);
 
   /* Handle PTR + OFFSET here.  */
   if (size_valid_p (op1, object_size_type)
