@@ -1527,7 +1527,7 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
       if (size_unknown_p (bytes, 0))
 	;
       else if ((object_size_type & OST_DYNAMIC)
-	       || compare_tree_int (op1, offset_limit) <= 0)
+	       || bytes != wholesize || compare_tree_int (op1, offset_limit) <= 0)
 	bytes = size_for_offset (bytes, op1, wholesize);
       /* In the static case, with a negative offset, the best estimate for
 	 minimum size is size_unknown but for maximum size, the wholesize is a
