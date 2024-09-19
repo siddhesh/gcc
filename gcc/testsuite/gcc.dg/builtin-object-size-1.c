@@ -791,6 +791,25 @@ test13 (unsigned cond)
 #endif
 }
 
+void
+__attribute__ ((noinline))
+test14 (unsigned off)
+{
+  char *buf2 = malloc (10);
+  char *p;
+  size_t t;
+
+  p = &buf2[off];
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (p, 0) != 10 - off)
+    FAIL ();
+#else
+  if (__builtin_object_size (p, 0) != 10)
+    FAIL ();
+#endif
+}
+
 int
 main (void)
 {
