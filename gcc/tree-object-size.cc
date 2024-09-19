@@ -1473,7 +1473,7 @@ merge_object_sizes (struct object_size_info *osi, tree dest, tree orig)
    with all of its targets are constants.  */
 
 static tree
-try_collapsing_offset (tree op, int object_size_type)
+try_collapsing_offset (tree op, tree cst, tree_code code, int object_size_type)
 {
   gcc_assert (!(object_size_type & OST_DYNAMIC));
 
@@ -1485,13 +1485,41 @@ try_collapsing_offset (tree op, int object_size_type)
   switch (gimple_code (stmt))
     {
     case GIMPLE_ASSIGN:
-      /* Peek through casts.  */
-      if (gimple_assign_rhs_code (stmt) == NOP_EXPR)
+      switch (gimple_assign_rhs_code (stmt))
 	{
-	  tree ret = try_collapsing_offset (gimple_assign_rhs1 (stmt),
-					    object_size_type);
-	  if (TREE_CODE (ret) == INTEGER_CST)
-	    return ret;
+	  /* Peek through casts.  */
+	case NOP_EXPR:
+	    {
+	      tree ret = try_collapsing_offset (gimple_assign_rhs1 (stmt),
+						NULL_TREE, NOP_EXPR,
+						object_size_type);
+	      if (TREE_CODE (ret) == INTEGER_CST)
+		return ret;
+	      break;
+	    }
+	  /* Propagate constant offsets to PHI expressions.  */
+	case PLUS_EXPR:
+	case MINUS_EXPR:
+	    {
+	      tree rhs1 = gimple_assign_rhs1 (stmt);
+	      tree rhs2 = gimple_assign_rhs2 (stmt);
+	      tree ret = NULL_TREE;
+
+	      if (TREE_CODE (rhs1) == INTEGER_CST)
+		ret = try_collapsing_offset (rhs2, rhs1,
+					     gimple_assign_rhs_code (stmt),
+					     object_size_type);
+	      else if (TREE_CODE (rhs2) == INTEGER_CST)
+		ret = try_collapsing_offset (rhs1, rhs2,
+					     gimple_assign_rhs_code (stmt),
+					     object_size_type);
+
+	      if (ret && TREE_CODE (ret) == INTEGER_CST)
+		return ret;
+	      break;
+	    }
+	default:
+	  break;
 	}
       break;
     case GIMPLE_PHI:
@@ -1507,14 +1535,20 @@ try_collapsing_offset (tree op, int object_size_type)
 	      if (TREE_CODE (rhs) != INTEGER_CST)
 		return op;
 
+	      if (cst)
+		rhs = fold_build2 (code, sizetype,
+				   fold_convert (ptrdiff_type_node, rhs),
+				   fold_convert (ptrdiff_type_node, cst));
+	      else
+		rhs = fold_convert (ptrdiff_type_node, rhs);
+
 	      /* Note that this is the *opposite* of what we usually do with
 		 sizes, because the maximum offset estimate here will give us a
 		 minimum size estimate and vice versa.  */
-	      enum tree_code code = (object_size_type & OST_MINIMUM
-				     ? MAX_EXPR : MIN_EXPR);
+	      enum tree_code selection_code = (object_size_type & OST_MINIMUM
+					       ? MAX_EXPR : MIN_EXPR);
 
-	      off = fold_build2 (code, ptrdiff_type_node, off,
-				 fold_convert (ptrdiff_type_node, rhs));
+	      off = fold_build2 (selection_code, ptrdiff_type_node, off, rhs);
 	    }
 	  return fold_convert (sizetype, off);
 	}
@@ -1558,7 +1592,7 @@ plus_stmt_object_size (struct object_size_info *osi, tree var, gimple *stmt)
     return false;
 
   if (!(object_size_type & OST_DYNAMIC) && TREE_CODE (op1) != INTEGER_CST)
-    op1 = try_collapsing_offset (op1, object_size_type);
+    op1 = try_collapsing_offset (op1, NULL_TREE, NOP_EXPR, object_size_type);
 
   /* Handle PTR + OFFSET here.  */
   if (size_valid_p (op1, object_size_type)

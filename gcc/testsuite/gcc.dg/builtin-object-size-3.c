@@ -777,6 +777,26 @@ test13 (unsigned cond)
   if (__builtin_object_size (&p[t], 2) != 5)
     FAIL ();
 #endif
+
+  t += 4;
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&p[t], 2) != (cond ? 1 : 5))
+    FAIL ();
+#else
+  if (__builtin_object_size (&p[t], 2) != 1)
+    FAIL ();
+#endif
+
+  t -= 5;
+
+#ifdef __builtin_object_size
+  if (__builtin_object_size (&p[t], 2) != (cond ? 6 : 10))
+    FAIL ();
+#else
+  if (__builtin_object_size (&p[t], 2) != 6)
+    FAIL ();
+#endif
 }
 
 int
