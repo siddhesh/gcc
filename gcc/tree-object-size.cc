@@ -1858,6 +1858,20 @@ phi_dynamic_object_size (struct object_size_info *osi, tree var)
   object_sizes_set (osi, varno, sizes, wholesizes);
 }
 
+/* Return true if PTR is defined with .ACCESS_WITH_SIZE.  */
+
+static bool
+is_access_with_size (tree ptr)
+{
+  gcc_assert (TREE_CODE (ptr) == SSA_NAME);
+
+  gimple *stmt = SSA_NAME_DEF_STMT (ptr);
+  if (gimple_code (stmt) != GIMPLE_CALL)
+    return false;
+
+  return gimple_call_internal_p (as_a <gcall *> (stmt), IFN_ACCESS_WITH_SIZE);
+}
+
 /* Compute object sizes for VAR.
    For ADDR_EXPR an object size is the number of remaining bytes
    to the end of the object (where what is considered an object depends on
@@ -1941,20 +1955,24 @@ collect_object_sizes_for (struct object_size_info *osi, tree var)
         else if (gimple_assign_single_p (stmt)
                  || gimple_assign_unary_nop_p (stmt))
           {
+	    /* If RHS is a MEM_REF of PTR with zero offset, the size may be
+	       expressed with the .ACCESS_WITH_SIZE builtin in the form of
+	       &PTR, so look for that if available.  This is the sample IR of
+	       this situation:
+	       1  _1 = .ACCESS_WITH_SIZE (_3, _4, 1, 0, -1, 0B);
+	       2  _5 = *_1;
+	       3  _6 = __builtin_dynamic_object_size (_5, 1);
+	       */
+	    if (TREE_CODE (rhs) == MEM_REF
+		&& POINTER_TYPE_P (TREE_TYPE (rhs))
+		&& TREE_CODE (TREE_OPERAND (rhs, 0)) == SSA_NAME
+		&& integer_zerop (TREE_OPERAND (rhs, 1))
+		&& is_access_with_size (TREE_OPERAND (rhs, 0)))
+	      rhs = TREE_OPERAND (rhs, 0);
+
             if (TREE_CODE (rhs) == SSA_NAME
                 && POINTER_TYPE_P (TREE_TYPE (rhs)))
 	      reexamine = merge_object_sizes (osi, var, rhs);
-	    /* Handle the following stmt #2 to propagate the size from the
-	       stmt #1 to #3:
-		1  _1 = .ACCESS_WITH_SIZE (_3, _4, 1, 0, -1, 0B);
-		2  _5 = *_1;
-		3  _6 = __builtin_dynamic_object_size (_5, 1);
-	     */
-	    else if (TREE_CODE (rhs) == MEM_REF
-		     && POINTER_TYPE_P (TREE_TYPE (rhs))
-		     && TREE_CODE (TREE_OPERAND (rhs, 0)) == SSA_NAME
-		     && integer_zerop (TREE_OPERAND (rhs, 1)))
-	      reexamine = merge_object_sizes (osi, var, TREE_OPERAND (rhs, 0));
             else
               expr_object_size (osi, var, rhs);
           }
