@@ -900,6 +900,25 @@ access_with_size_object_size (const gcall *call, int object_size_type)
   return size;
 }
 
+/* Sizes for allocations exceeding OFFSET_LIMIT are invalid, so reset them to
+   zero.  While this is more universally applicable, for now now it is only
+   used for cases where the object size is deduced from the input to an
+   allocator function.  */
+static tree
+cap_allocated_size (tree sz, int object_size_type)
+{
+  tree size_limit = build_int_cst (sizetype, offset_limit);
+  tree ret = fold_build3 (COND_EXPR, sizetype,
+			  fold_build2 (LT_EXPR, sizetype, sz, size_limit),
+			  sz,
+			  size_zero_node);
+
+  if ((object_size_type & OST_DYNAMIC) == 0 && TREE_CODE (ret) != INTEGER_CST)
+    return size_unknown (object_size_type);
+
+  return ret;
+}
+
 /* Compute __builtin_object_size for CALL, which is a GIMPLE_CALL.
    Handles calls to functions declared with attribute alloc_size.
    OBJECT_SIZE_TYPE is the second argument from __builtin_object_size.
@@ -976,7 +995,7 @@ alloc_object_size (const gcall *call, tree ptr, int object_size_type)
 	  && TREE_CODE (bytes) != INTEGER_CST)
 	bytes = size_unknown (object_size_type);
     }
-  return bytes;
+  return cap_allocated_size (bytes, object_size_type);
 }
 
 /* Compute __builtin_object_size for CALL, which is a call to either
