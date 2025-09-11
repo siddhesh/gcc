@@ -61,7 +61,7 @@ struct GTY(()) object_size
 static tree compute_object_offset (tree, const_tree);
 static bool addr_object_size (struct object_size_info *,
 			      const_tree, int, tree *, tree *t = NULL);
-static tree alloc_object_size (const gcall *, int);
+static tree alloc_object_size (const gcall *, tree, int);
 static tree access_with_size_object_size (const gcall *, int);
 static tree pass_through_call (const gcall *);
 static void collect_object_sizes_for (struct object_size_info *, tree);
@@ -906,7 +906,7 @@ access_with_size_object_size (const gcall *call, int object_size_type)
    If unknown, return size_unknown (object_size_type).  */
 
 static tree
-alloc_object_size (const gcall *call, int object_size_type)
+alloc_object_size (const gcall *call, tree ptr, int object_size_type)
 {
   gcc_assert (is_gimple_call (call));
 
@@ -961,7 +961,22 @@ alloc_object_size (const gcall *call, int object_size_type)
   else
     bytes = targ1;
 
-  return bytes ? bytes : size_unknown (object_size_type);
+  bytes = bytes ? bytes : size_unknown (object_size_type);
+  /* For a minimum size, wrap the expression into a NULL check, bailing out
+     with size_unknown if true.  */
+  if (object_size_type & OST_MINIMUM)
+    {
+      tree nullcheck = fold_build2 (EQ_EXPR, build_pointer_type (void_type_node),
+				    ptr, null_pointer_node);
+
+      bytes = fold_build3 (COND_EXPR, sizetype, nullcheck,
+			   size_unknown (object_size_type), bytes);
+
+      if ((object_size_type & OST_DYNAMIC) == 0
+	  && TREE_CODE (bytes) != INTEGER_CST)
+	bytes = size_unknown (object_size_type);
+    }
+  return bytes;
 }
 
 /* Compute __builtin_object_size for CALL, which is a call to either
@@ -1248,13 +1263,22 @@ gimplify_size_expressions (object_size_info *osi)
 	  if (size_expr)
 	    {
 	      gimple_stmt_iterator gsi;
-	      if (code == GIMPLE_NOP)
-		gsi = gsi_start_bb (single_succ (ENTRY_BLOCK_PTR_FOR_FN (cfun)));
-	      else
-		gsi = gsi_for_stmt (stmt);
-
 	      force_gimple_operand (size_expr, &seq, true, NULL);
-	      gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
+
+	      /* The minimum size expression could have a NULL check on the
+		 pointer to the object, so try to put it after the object
+		 definition whenever possible.  */
+	      if (code == GIMPLE_NOP)
+		{
+		  gsi = gsi_start_bb (single_succ (ENTRY_BLOCK_PTR_FOR_FN (cfun)));
+		  gsi_insert_seq_before (&gsi, seq, GSI_CONTINUE_LINKING);
+		}
+	      else
+		{
+		  gsi = gsi_for_stmt (stmt);
+		  gsi_insert_seq_after (&gsi, seq, GSI_CONTINUE_LINKING);
+		}
+
 	    }
 	}
 
@@ -1507,7 +1531,7 @@ call_object_size (struct object_size_info *osi, tree ptr, gcall *call)
   else if (is_access_with_size)
     bytes = access_with_size_object_size (call, object_size_type);
   else
-    bytes = alloc_object_size (call, object_size_type);
+    bytes = alloc_object_size (call, ptr, object_size_type);
 
   if (!size_valid_p (bytes, object_size_type))
     bytes = size_unknown (object_size_type);

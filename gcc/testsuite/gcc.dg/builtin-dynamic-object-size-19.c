@@ -27,13 +27,16 @@ typedef __SIZE_TYPE__ size_t;
 
 void sink (void*);
 
-#define T(alloc, n) do {			\
-    void *p = alloc;				\
-    sink (p);					\
-    ELIM (n == __builtin_object_size (p, 0));	\
-    ELIM (n == __builtin_object_size (p, 1));	\
-    ELIM (n == __builtin_object_size (p, 2));	\
-    ELIM (n == __builtin_object_size (p, 3));	\
+#define T(alloc, n) do {				\
+    void *p = alloc;					\
+    if (p != (void *) 0)				\
+      {							\
+	sink (p);					\
+	ELIM (n == __builtin_object_size (p, 0));	\
+	ELIM (n == __builtin_object_size (p, 1));	\
+	ELIM (n == __builtin_object_size (p, 2));	\
+	ELIM (n == __builtin_object_size (p, 3));	\
+      }							\
   } while (0)
 
 
